@@ -1,0 +1,33 @@
+meta {
+  name: Search - venue (Murcia) [L]
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{SEARCHSERVICE_HOST}}:{{SEARCHSERVICE_PORT}}/api/v1/search/search
+  body: json
+  auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{access_token}}
+}
+
+body:json {
+  {
+    "text": "plaza sandoval",
+    "viewport": {
+      "bottomLeft": { "lat": 37.8, "lon": -1.2 },
+      "topRight":   { "lat": 38.2, "lon": -0.8 }
+    },
+    "focusPoint": { "lat": 37.984, "lon": -1.128 },
+    "language": "es",
+    "size": 5
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

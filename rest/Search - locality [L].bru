@@ -1,0 +1,32 @@
+meta {
+  name: Search - locality [L]
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{SEARCHSERVICE_HOST}}:{{SEARCHSERVICE_PORT}}/api/v1/search/search
+  body: json
+  auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{access_token}}
+}
+
+body:json {
+  {
+    "text": "murcia",
+    "viewport": {
+      "bottomLeft": { "lat": 37.0, "lon": -2.0 },
+      "topRight":   { "lat": 39.0, "lon": 0.0 }
+    },
+    "language": "es",
+    "size": 5
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

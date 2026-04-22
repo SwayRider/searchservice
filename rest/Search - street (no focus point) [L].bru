@@ -1,0 +1,32 @@
+meta {
+  name: Search - street (no focus point) [L]
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{SEARCHSERVICE_HOST}}:{{SEARCHSERVICE_PORT}}/api/v1/search/search
+  body: json
+  auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{access_token}}
+}
+
+body:json {
+  {
+    "text": "calle mayor",
+    "viewport": {
+      "bottomLeft": { "lat": 37.8, "lon": -1.2 },
+      "topRight":   { "lat": 38.2, "lon": -0.8 }
+    },
+    "language": "es",
+    "size": 5
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

@@ -1,0 +1,25 @@
+meta {
+  name: Search - Oosthamsesteenweg olmen
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{SEARCHSERVICE_HOST}}:{{SEARCHSERVICE_PORT}}/api/v1/search/search
+  body: json
+  auth: inherit
+}
+
+headers {
+  Authorization: Bearer {{access_token}}
+}
+
+body:json {
+  {"text":"oosthamsesteenweg 8, olmen","viewport":{"bottom_left":{"lat":50.21026180490014,"lon":3.9296717866307915},"top_right":{"lat":51.56067674080501,"lon":5.3995364589317205}},"focus_point":{"lat":51.1,"lon":5.1},"language":"en-US","size":5}
+  
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}

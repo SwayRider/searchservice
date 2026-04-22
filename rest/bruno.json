@@ -1,0 +1,9 @@
+{
+  "version": "1",
+  "name": "SearchService",
+  "type": "collection",
+  "ignore": [
+    "node_modules",
+    ".git"
+  ]
+}
