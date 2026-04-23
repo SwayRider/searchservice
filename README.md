@@ -21,12 +21,12 @@ The searchservice exposes two server interfaces:
 
 ### Search Flow
 
-Search proceeds in up to four phases, stopping early as soon as results are found:
+Search proceeds in 3 phases, with an optional localadmin retry phase if no address results are found:
 
 1. **Phase 1 — Core regions with boundary**: Query Pelias for regions whose core area intersects the viewport, restricted to the viewport bounding box.
 2. **Phase 2 — Extended regions with boundary**: Query Pelias for extended-coverage regions not queried in Phase 1, also restricted to the viewport.
-3. **Phase 3 — Core + extended without boundary**: Re-query all servers from Phases 1 & 2, without geographic restriction.
-4. **Phase 4 — Remaining regions without boundary**: Query any configured Pelias servers not yet queried, without restriction.
+3. **Phase 3 — Remaining configured regions with boundary**: Query any other configured Pelias servers not returned by RegionService, still with boundary restriction.
+4. **Localadmin retry**: If no address-layer results were found, retry with alternative queries using `localadmin` names extracted from locality results.
 
 The RegionService is called with the viewport expanded by 1× its width and height on each side to find all potentially relevant regions.
 
@@ -34,9 +34,22 @@ The RegionService is called with the viewport expanded by 1× its width and heig
 
 After collecting results from a phase:
 
-1. **Address collapsing**: Address-layer results are grouped by `(street, locality)`. Only the highest-confidence result per group is kept (ties broken by distance to the focus point).
-2. **Ranking**: Results sorted by `confidence` descending, then by distance from the focus point ascending (equirectangular approximation).
-3. **Truncation**: Result list capped at the requested `size` (default 5, max 20).
+1. **Address collapsing**: Address-layer results are grouped by `(street, locality)`. Keep the highest-confidence result (ties broken by shortest housenumber, then nearest to focus point).
+2. **Deduplication by ID**: Results with the same Pelias ID are deduplicated, keeping highest confidence (tie: nearest to focus).
+3. **Ranking**: Results sorted by composite score descending, then by distance from focus point ascending.
+4. **Truncation**: Result list capped at the requested `size` (default 5, max 20).
+
+**Ranking score formula:**
+```
+score = confidence + textMatchBonus + housenumberBonus - distancePenalty - streetMismatchPenalty
+```
+
+- **textMatchBonus**: +0.2 for query tokens appearing in result label
+- **housenumberBonus**: +0.5 for exact house number match
+- **distancePenalty**: Exponential decay, max 0.5 penalty (~500km half-life)
+- **streetMismatchPenalty**: Levenshtein similarity penalty, max 1.0
+
+The confidence field is overwritten with the computed ranking score clamped to [0, 1].
 
 ## Configuration
 
@@ -63,18 +76,18 @@ The region names must match the values returned by RegionService (e.g. `iberian-
 
 | Environment Variable | CLI Flag | Default | Description |
 | -------------------- | -------- | ------- | ----------- |
-| `REGION_SERVICE_HOST` | `-region-service-host` | | RegionService host |
-| `REGION_SERVICE_PORT` | `-region-service-port` | | RegionService gRPC port |
-| `AUTH_SERVICE_HOST` | `-auth-service-host` | | AuthService host |
-| `AUTH_SERVICE_PORT` | `-auth-service-port` | | AuthService gRPC port |
+| `REGIONSERVICE_HOST` | `-regionservice-host` | | RegionService host |
+| `REGIONSERVICE_PORT` | `-regionservice-port` | | RegionService gRPC port |
+| `AUTHSERVICE_HOST` | `-authservice-host` | | AuthService host |
+| `AUTHSERVICE_PORT` | `-authservice-port` | | AuthService gRPC port |
 
 See `.env.example` for a complete configuration example.
 
 ## API Reference
 
-The API is defined in `backend/protos/searchservice/v1/searchservice.proto`.
+The API is defined in `protos/search/v1/search.proto`.
 
-The `/Search` RPC requires a valid JWT (`Authorization: Bearer <token>`). The `/Ping` and `/health` endpoints are public.
+The `/Search` and `/ReverseGeocode` RPCs require a valid JWT (`Authorization: Bearer <token>`). The `/Ping` and `/health` endpoints are public.
 
 ---
 
@@ -82,12 +95,12 @@ The `/Search` RPC requires a valid JWT (`Authorization: Bearer <token>`). The `/
 
 Searches for locations matching a text query within or near a map viewport.
 
-- **Endpoint:** `POST /api/v1/search`
+- **Endpoint:** `POST /api/v1/search/search`
 - **Access:** JWT required (email verified)
 
 ```bash
 curl --request POST \
-  --url http://localhost:8080/api/v1/search \
+  --url http://localhost:8080/api/v1/search/search \
   --header 'Authorization: Bearer <token>' \
   --header 'Content-Type: application/json' \
   --data '{
@@ -139,11 +152,16 @@ Response:
 | `locality` | string | City/town name |
 | `region` | string | Province/state |
 | `country` | string | Country name |
-| `confidence` | double | Pelias confidence score [0, 1] |
+| `confidence` | double | Computed ranking score [0, 1] |
 | `layer` | string | Pelias layer (`venue`, `address`, `street`, `locality`, …) |
 | `lat` | double | Latitude |
 | `lon` | double | Longitude |
 | `street` | string | Street name (used for address collapsing) |
+| `housenumber` | string | House number |
+| `id` | string | Pelias result ID (for deduplication) |
+| `localadmin` | string | Local admin area (for localadmin retry) |
+| `country_code` | string | ISO country code |
+| `name` | string | Name (for venue results) |
 
 **Error codes:**
 
@@ -152,6 +170,46 @@ Response:
 | `UNAVAILABLE` | RegionService unreachable |
 | `UNAVAILABLE` | All configured Pelias servers unreachable |
 | `OK` (empty results) | Search succeeded but no results found |
+
+---
+
+### Reverse Geocode
+
+Reverse geocodes a coordinate to address results.
+
+- **Endpoint:** `POST /api/v1/search/reverse`
+- **Access:** JWT required (email verified)
+
+```bash
+curl --request POST \
+  --url http://localhost:8080/api/v1/search/reverse \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "point": { "lat": 37.984, "lon": -1.128 },
+    "size": 10,
+    "language": "es"
+  }'
+```
+
+**Request fields:**
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `point` | Coordinate | yes | Latitude/longitude to reverse geocode |
+| `size` | int32 | no | Max results (default: 10) |
+| `language` | string | no | BCP-47 language tag |
+
+Response: Same format as Search response.
+
+**Error codes:**
+
+| gRPC code | Condition |
+| --------- | --------- |
+| `INVALID_ARGUMENT` | point is required |
+| `UNAVAILABLE` | RegionService unreachable |
+| `NOT_FOUND` | No region found for coordinate |
+| `NOT_FOUND` | No Pelias server configured for region |
 
 ---
 
@@ -192,14 +250,3 @@ go run ./services/searchservice/cmd/searchservice
 # Build container (from repo root)
 make services-searchservice-container
 ```
-
-## Development
-
-For local development with Docker Compose infrastructure:
-
-1. Start base infrastructure: `cd infra/dev/layer-00 && docker-compose up -d`
-2. Start SwayRider services: `cd infra/dev/layer-20 && docker-compose up -d`
-
-Development ports:
-- REST API: 34006
-- gRPC: 34106
