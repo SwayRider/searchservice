@@ -35,8 +35,8 @@ RUN if [ "${TARGETARCH}" = "amd64" ]; then \
     go build -o searchservice ./cmd/searchservice/main.go
 
 # Runtime stage
-FROM debian:bookworm-slim
+FROM --platform=$TARGETPLATFORM debian:bookworm-slim
 WORKDIR /app
 COPY --from=builder /app/searchservice .
-RUN apt-get update && apt-get install -y ca-certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 CMD ["./searchservice"]
