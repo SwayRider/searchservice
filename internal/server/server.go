@@ -1,14 +1,3 @@
-// Package server implements the gRPC server for the search service.
-//
-// # Endpoints
-//
-// The search service provides:
-//   - Search: Geocoding search with JWT auth required
-//   - Ping: Connectivity check (public)
-//
-// The Search endpoint uses the zero-value EndpointProfile (the secure default),
-// which requires a valid JWT token with email verified.
-// Ping and health endpoints are registered as public.
 package server
 
 import (
@@ -19,11 +8,10 @@ import (
 	"github.com/swayrider/swlib/security"
 )
 
-// init registers security profiles for all endpoints.
-// Search is NOT registered here — it uses the zero-value EndpointProfile (secure default),
-// which requires a valid JWT token with email verified.
 func init() {
 	security.PublicEndpoint("/health.v1.HealthService/Ping")
+	security.UserOrServiceEndpoint("/search.v1.SearchService/Search", []string{"search:execute"})
+	security.UserOrServiceEndpoint("/search.v1.SearchService/ReverseGeocode", []string{"search:execute"})
 }
 
 // SearchServer implements the SearchService gRPC interface.
