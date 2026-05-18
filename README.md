@@ -51,6 +51,18 @@ score = confidence + textMatchBonus + housenumberBonus - distancePenalty - stree
 
 The confidence field is overwritten with the computed ranking score clamped to [0, 1].
 
+## Authorization
+
+| gRPC endpoint | Access |
+|---|---|
+| `/health.v1.HealthService/Ping` | Public — no token required |
+| `/search.v1.SearchService/Search` | User JWT **or** service client token with `search:execute` scope |
+| `/search.v1.SearchService/ReverseGeocode` | User JWT **or** service client token with `search:execute` scope |
+
+Service clients (e.g. swayrider-api) must obtain a token from authservice using their `clientId` and `clientSecret`, then pass it as `Authorization: Bearer <token>` in the gRPC call metadata.
+
+---
+
 ## Configuration
 
 Configuration is provided via environment variables or CLI flags.
