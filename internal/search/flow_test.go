@@ -48,7 +48,7 @@ type fakeRegionSearcher struct {
 	err  error
 }
 
-func (f *fakeRegionSearcher) SearchBox(bb regionclient.BoundingBox, includeExtended bool) (regionclient.RegionList, error) {
+func (f *fakeRegionSearcher) SearchBox(_ context.Context, _ string, bb regionclient.BoundingBox, includeExtended bool) (regionclient.RegionList, error) {
 	return f.list, f.err
 }
 

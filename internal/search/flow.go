@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"github.com/swayrider/grpcclients/regionclient"
 	searchv1 "github.com/swayrider/protos/search/v1"
@@ -34,7 +35,18 @@ type PeliasSearcher interface {
 
 // regionSearcher is the interface satisfied by *regionclient.Client for testability.
 type regionSearcher interface {
-	SearchBox(boundingBox regionclient.BoundingBox, includeExtended bool) (regionclient.RegionList, error)
+	SearchBox(ctx context.Context, token string, boundingBox regionclient.BoundingBox, includeExtended bool) (regionclient.RegionList, error)
+}
+
+func incomingToken(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	if auth := md.Get("authorization"); len(auth) > 0 {
+		return strings.TrimPrefix(auth[0], "Bearer ")
+	}
+	return ""
 }
 
 // SearchFlow orchestrates the 4-phase Pelias search strategy.
@@ -108,7 +120,7 @@ func (f *SearchFlow) Search(ctx context.Context, req *searchv1.SearchRequest) ([
 	}
 
 	// Query region service to determine which Pelias instances to call
-	regionList, err := f.regionClient.SearchBox(extBox, true)
+	regionList, err := f.regionClient.SearchBox(ctx, incomingToken(ctx), extBox, true)
 	if err != nil {
 		lg.Warnf("region service unavailable: %v", err)
 		return nil, status.Error(codes.Unavailable, "region service unavailable")
@@ -315,7 +327,7 @@ func (f *SearchFlow) ReverseGeocode(ctx context.Context, req *searchv1.ReverseGe
 		},
 	}
 
-	regionList, err := f.regionClient.SearchBox(bb, false)
+	regionList, err := f.regionClient.SearchBox(ctx, incomingToken(ctx), bb, false)
 	if err != nil {
 		lg.Warnf("region service unavailable: %v", err)
 		return nil, status.Error(codes.Unavailable, "region service unavailable")
