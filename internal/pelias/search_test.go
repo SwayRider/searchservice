@@ -41,7 +41,7 @@ func TestSearch_success(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -89,7 +89,7 @@ func TestSearch_emptyResults(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := map[string]interface{}{"features": []interface{}{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -111,7 +111,7 @@ func TestSearch_skipsEmptyLabel(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -141,7 +141,7 @@ func TestSearch_skipsInvalidCoordinates(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -165,7 +165,7 @@ func TestSearch_withFocus(t *testing.T) {
 		}
 		resp := map[string]interface{}{"features": []interface{}{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -186,7 +186,7 @@ func TestSearch_withoutFocus(t *testing.T) {
 		}
 		resp := map[string]interface{}{"features": []interface{}{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -207,7 +207,7 @@ func TestSearch_withBoundary(t *testing.T) {
 		}
 		resp := map[string]interface{}{"features": []interface{}{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -228,7 +228,7 @@ func TestSearch_withoutBoundary(t *testing.T) {
 		}
 		resp := map[string]interface{}{"features": []interface{}{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -246,7 +246,7 @@ func TestSearch_withLanguage(t *testing.T) {
 		}
 		resp := map[string]interface{}{"features": []interface{}{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -271,7 +271,7 @@ func TestSearch_alwaysSendsTextLayersSize(t *testing.T) {
 		}
 		resp := map[string]interface{}{"features": []interface{}{}}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
