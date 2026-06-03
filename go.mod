@@ -6,7 +6,7 @@ require (
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0
 	github.com/swayrider/grpcclients v0.1.4
 	github.com/swayrider/protos v0.1.2
-	github.com/swayrider/swlib v0.1.4
+	github.com/swayrider/swlib v0.1.5
 	google.golang.org/grpc v1.80.0
 )
 

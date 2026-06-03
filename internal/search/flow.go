@@ -220,14 +220,6 @@ func (f *SearchFlow) Search(ctx context.Context, req *searchv1.SearchRequest) ([
 	return Rank(allResults, text, focusLat, focusLon, size), nil
 }
 
-func toSet(s []string) map[string]bool {
-	m := make(map[string]bool, len(s))
-	for _, v := range s {
-		m[v] = true
-	}
-	return m
-}
-
 func clampLat(lat float64) float64 {
 	if lat < -90 {
 		return -90

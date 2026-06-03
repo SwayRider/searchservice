@@ -1,9 +1,10 @@
 package server
 
 import (
+	"context"
+
 	healthv1 "github.com/swayrider/protos/health/v1"
 	searchv1 "github.com/swayrider/protos/search/v1"
-	"github.com/swayrider/searchservice/internal/search"
 	log "github.com/swayrider/swlib/logger"
 	"github.com/swayrider/swlib/security"
 )
@@ -14,15 +15,20 @@ func init() {
 	security.UserOrServiceEndpoint("/search.v1.SearchService/ReverseGeocode", []string{"search:execute"})
 }
 
+type searchFlow interface {
+	Search(ctx context.Context, req *searchv1.SearchRequest) ([]*searchv1.Result, error)
+	ReverseGeocode(ctx context.Context, req *searchv1.ReverseGeocodeRequest) ([]*searchv1.Result, error)
+}
+
 // SearchServer implements the SearchService gRPC interface.
 type SearchServer struct {
 	searchv1.UnimplementedSearchServiceServer
-	flow *search.SearchFlow
+	flow searchFlow
 	l    *log.Logger
 }
 
 // NewSearchServer creates a new SearchServer.
-func NewSearchServer(flow *search.SearchFlow, l *log.Logger) *SearchServer {
+func NewSearchServer(flow searchFlow, l *log.Logger) *SearchServer {
 	return &SearchServer{
 		flow: flow,
 		l: l.Derive(
