@@ -32,6 +32,15 @@ func (f *fakePeliasSearcher) Search(
 	return f.results, f.err
 }
 
+func (f *fakePeliasSearcher) Autocomplete(
+	ctx context.Context,
+	text, language string,
+	focusLat, focusLon float64,
+) ([]*searchv1.Result, error) {
+	f.callCount++
+	return f.results, f.err
+}
+
 func (f *fakePeliasSearcher) Reverse(
 	ctx context.Context,
 	lat, lon float64,
@@ -256,6 +265,14 @@ func (f *queryBasedSearcher) Search(
 	if res, ok := f.responses[text]; ok {
 		return res, nil
 	}
+	return nil, nil
+}
+
+func (f *queryBasedSearcher) Autocomplete(
+	ctx context.Context,
+	text, language string,
+	focusLat, focusLon float64,
+) ([]*searchv1.Result, error) {
 	return nil, nil
 }
 

@@ -13,11 +13,13 @@ func init() {
 	security.PublicEndpoint("/health.v1.HealthService/Ping")
 	security.UserOrServiceEndpoint("/search.v1.SearchService/Search", []string{"search:execute"})
 	security.UserOrServiceEndpoint("/search.v1.SearchService/ReverseGeocode", []string{"search:execute"})
+	security.UserOrServiceEndpoint("/search.v1.SearchService/Autocomplete", []string{"search:execute"})
 }
 
 type searchFlow interface {
 	Search(ctx context.Context, req *searchv1.SearchRequest) ([]*searchv1.Result, error)
 	ReverseGeocode(ctx context.Context, req *searchv1.ReverseGeocodeRequest) ([]*searchv1.Result, error)
+	Autocomplete(ctx context.Context, req *searchv1.AutocompleteRequest) ([]*searchv1.Result, error)
 }
 
 // SearchServer implements the SearchService gRPC interface.
