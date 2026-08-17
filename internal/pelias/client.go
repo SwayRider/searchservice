@@ -164,6 +164,92 @@ func (c *Client) Search(
 // Response is an alias for the result slice, used by the Reverse method.
 type Response = []*searchv1.Result
 
+// Autocomplete queries Pelias for partial text using the /autocomplete endpoint.
+// focus.point params are always sent to bias results toward the user's location.
+// Returns (nil, error) on network or HTTP error; caller should log and skip.
+func (c *Client) Autocomplete(
+	ctx context.Context,
+	text string,
+	language string,
+	focusLat, focusLon float64,
+) ([]*searchv1.Result, error) {
+	params := url.Values{}
+	params.Set("text", text)
+	params.Set("layers", peliasLayers)
+	params.Set("size", strconv.Itoa(peliasSize))
+	params.Set("focus.point.lat", strconv.FormatFloat(focusLat, 'f', -1, 64))
+	params.Set("focus.point.lon", strconv.FormatFloat(focusLon, 'f', -1, 64))
+
+	endpoint := fmt.Sprintf("%s/autocomplete?%s", c.baseURL, strings.ReplaceAll(params.Encode(), "+", "%20"))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	if language != "" {
+		req.Header.Set("Accept-Language", language)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("pelias returned status %d: %s", resp.StatusCode, body)
+	}
+
+	var geoResp geoJSONResponse
+	if err := json.NewDecoder(resp.Body).Decode(&geoResp); err != nil {
+		return nil, err
+	}
+
+	results := make([]*searchv1.Result, 0, len(geoResp.Features))
+	for _, f := range geoResp.Features {
+		if len(f.Geometry.Coordinates) < 2 {
+			continue
+		}
+		if f.Properties.Label == "" {
+			continue
+		}
+
+		label := f.Properties.Label
+		if formatted := formatLabel(
+			f.Properties.CountryCode,
+			f.Properties.Name,
+			f.Properties.Layer,
+			f.Properties.Street,
+			f.Properties.Housenumber,
+			f.Properties.Localadmin,
+			f.Properties.Locality,
+			f.Properties.Region,
+			f.Properties.Country,
+		); formatted != "" {
+			label = formatted
+		}
+
+		results = append(results, &searchv1.Result{
+			Id:          f.Properties.ID,
+			Name:        f.Properties.Name,
+			Label:       label,
+			Street:      f.Properties.Street,
+			Housenumber: f.Properties.Housenumber,
+			Localadmin:  f.Properties.Localadmin,
+			Locality:    f.Properties.Locality,
+			Region:      f.Properties.Region,
+			Country:     f.Properties.Country,
+			CountryCode: f.Properties.CountryCode,
+			Confidence:  f.Properties.Confidence,
+			Layer:       f.Properties.Layer,
+			Lat:         f.Geometry.Coordinates[1], // GeoJSON: [lon, lat]
+			Lon:         f.Geometry.Coordinates[0],
+		})
+	}
+	return results, nil
+}
+
 // Reverse queries Pelias for the given coordinates (reverse geocoding).
 // Returns (nil, error) on network or HTTP error; caller should log and skip.
 func (c *Client) Reverse(

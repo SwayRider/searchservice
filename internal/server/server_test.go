@@ -16,6 +16,7 @@ import (
 type mockSearchFlow struct {
 	searchFn         func(context.Context, *searchv1.SearchRequest) ([]*searchv1.Result, error)
 	reverseGeocodeFn func(context.Context, *searchv1.ReverseGeocodeRequest) ([]*searchv1.Result, error)
+	autocompleteFn   func(context.Context, *searchv1.AutocompleteRequest) ([]*searchv1.Result, error)
 }
 
 func (m *mockSearchFlow) Search(ctx context.Context, req *searchv1.SearchRequest) ([]*searchv1.Result, error) {
@@ -28,6 +29,13 @@ func (m *mockSearchFlow) Search(ctx context.Context, req *searchv1.SearchRequest
 func (m *mockSearchFlow) ReverseGeocode(ctx context.Context, req *searchv1.ReverseGeocodeRequest) ([]*searchv1.Result, error) {
 	if m.reverseGeocodeFn != nil {
 		return m.reverseGeocodeFn(ctx, req)
+	}
+	return nil, nil
+}
+
+func (m *mockSearchFlow) Autocomplete(ctx context.Context, req *searchv1.AutocompleteRequest) ([]*searchv1.Result, error) {
+	if m.autocompleteFn != nil {
+		return m.autocompleteFn(ctx, req)
 	}
 	return nil, nil
 }

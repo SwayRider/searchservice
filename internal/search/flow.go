@@ -25,6 +25,12 @@ type PeliasSearcher interface {
 		minLat, minLon, maxLat, maxLon float64,
 		hasBoundary bool,
 	) ([]*searchv1.Result, error)
+	Autocomplete(
+		ctx context.Context,
+		text string,
+		language string,
+		focusLat, focusLon float64,
+	) ([]*searchv1.Result, error)
 	Reverse(
 		ctx context.Context,
 		lat, lon float64,
@@ -294,6 +300,98 @@ func (f *SearchFlow) retryWithLocaladmin(
 		}
 	}
 	return results
+}
+
+// Autocomplete executes an autocomplete query biased toward the given focus point.
+// Results from core regions are ranked and returned before results from extended regions.
+func (f *SearchFlow) Autocomplete(ctx context.Context, req *searchv1.AutocompleteRequest) ([]*searchv1.Result, error) {
+	lg := f.logger.Derive(log.WithFunction("Autocomplete"))
+
+	if req.FocusPoint == nil {
+		return nil, status.Error(codes.InvalidArgument, "focus_point is required")
+	}
+
+	focusLat := req.FocusPoint.Lat
+	focusLon := req.FocusPoint.Lon
+
+	size := defaultSize
+	if req.Size != nil {
+		size = int(*req.Size)
+	}
+
+	language := ""
+	if req.Language != nil {
+		language = *req.Language
+	}
+
+	bb := regionclient.BoundingBox{
+		BottomLeft: regionclient.Coordinate{
+			Latitude:  clampLat(focusLat - 0.5),
+			Longitude: focusLon - 0.5,
+		},
+		TopRight: regionclient.Coordinate{
+			Latitude:  clampLat(focusLat + 0.5),
+			Longitude: focusLon + 0.5,
+		},
+	}
+
+	regionList, err := f.regionClient.SearchBox(ctx, incomingToken(ctx), bb, true)
+	if err != nil {
+		lg.Warnf("region service unavailable: %v", err)
+		return nil, status.Error(codes.Unavailable, "region service unavailable")
+	}
+
+	queriedNames := make(map[string]bool)
+	coreResults := make([]*searchv1.Result, 0)
+	extendedResults := make([]*searchv1.Result, 0)
+	successCount := 0
+
+	for _, region := range regionList.CoreRegions {
+		if queriedNames[region] {
+			continue
+		}
+		queriedNames[region] = true
+		clnt, ok := f.peliasClients[region]
+		if !ok {
+			continue
+		}
+		res, err := clnt.Autocomplete(ctx, req.Text, language, focusLat, focusLon)
+		if err != nil {
+			lg.Warnf("pelias autocomplete error for region %s: %v", region, err)
+			continue
+		}
+		successCount++
+		coreResults = append(coreResults, res...)
+	}
+
+	for _, region := range regionList.ExtendedRegions {
+		if queriedNames[region] {
+			continue
+		}
+		queriedNames[region] = true
+		clnt, ok := f.peliasClients[region]
+		if !ok {
+			continue
+		}
+		res, err := clnt.Autocomplete(ctx, req.Text, language, focusLat, focusLon)
+		if err != nil {
+			lg.Warnf("pelias autocomplete error for region %s: %v", region, err)
+			continue
+		}
+		successCount++
+		extendedResults = append(extendedResults, res...)
+	}
+
+	if successCount == 0 {
+		return nil, status.Error(codes.Unavailable, "all pelias servers unavailable")
+	}
+
+	ranked := Rank(coreResults, req.Text, focusLat, focusLon, size)
+	remaining := size - len(ranked)
+	if remaining > 0 {
+		ranked = append(ranked, Rank(extendedResults, req.Text, focusLat, focusLon, remaining)...)
+	}
+	return ranked, nil
 }
 
 // ReverseGeocode executes reverse geocoding for the given coordinate.
