@@ -275,14 +275,24 @@ func Rank(results []*searchv1.Result, query string, focusLat, focusLon float64, 
 	collapsed := CollapseAddresses(results, focusLat, focusLon)
 	deduped := DeduplicateByID(collapsed, focusLat, focusLon)
 
-	sort.Slice(deduped, func(i, j int) bool {
+	sort.SliceStable(deduped, func(i, j int) bool {
 		a, b := deduped[i], deduped[j]
 		scoreA := a.Confidence + queryTextScore(tokens, a.Label) + housenumberMatchScore(queryNums, a.Housenumber) - distancePenalty(a.Lat, a.Lon, focusLat, focusLon) - fuzzyStreetPenalty(tokens, a.Street)
 		scoreB := b.Confidence + queryTextScore(tokens, b.Label) + housenumberMatchScore(queryNums, b.Housenumber) - distancePenalty(b.Lat, b.Lon, focusLat, focusLon) - fuzzyStreetPenalty(tokens, b.Street)
 		if scoreA != scoreB {
 			return scoreA > scoreB
 		}
-		return equirDist(a.Lat, a.Lon, focusLat, focusLon) < equirDist(b.Lat, b.Lon, focusLat, focusLon)
+		distA := equirDist(a.Lat, a.Lon, focusLat, focusLon)
+		distB := equirDist(b.Lat, b.Lon, focusLat, focusLon)
+		if distA != distB {
+			return distA < distB
+		}
+		// Deterministic final tiebreak so equal-scored, equidistant results sort
+		// identically regardless of upstream map iteration order.
+		if a.Label != b.Label {
+			return a.Label < b.Label
+		}
+		return a.Id < b.Id
 	})
 
 	// Overwrite confidence with the computed ranking score (clamped to [0, 1]).

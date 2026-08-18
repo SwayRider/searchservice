@@ -307,3 +307,46 @@ func TestEditDistance(t *testing.T) {
 		}
 	}
 }
+
+func TestRank_deterministicLabelTiebreak(t *testing.T) {
+	// Same confidence, same coordinates, empty street → score and distance tie.
+	// The deterministic final tiebreak must order them by label ascending.
+	results := []*searchv1.Result{
+		makeResult("Zulu Place", "", "", "venue", 1.0, 51.0, 5.0),
+		makeResult("Alpha Place", "", "", "venue", 1.0, 51.0, 5.0),
+		makeResult("Middle Place", "", "", "venue", 1.0, 51.0, 5.0),
+	}
+	ranked := Rank(results, "", 51.0, 5.0, 5)
+	if len(ranked) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(ranked))
+	}
+	want := []string{"Alpha Place", "Middle Place", "Zulu Place"}
+	for i, r := range ranked {
+		if r.Label != want[i] {
+			t.Errorf("position %d: got %q, want %q", i, r.Label, want[i])
+		}
+	}
+}
+
+func TestRank_deterministicIDTiebreak_orderIndependent(t *testing.T) {
+	a := makeResultWithID("a", "Same Label", "", "", "", "venue", 1.0, 51.0, 5.0)
+	b := makeResultWithID("b", "Same Label", "", "", "", "venue", 1.0, 51.0, 5.0)
+	c := makeResultWithID("c", "Same Label", "", "", "", "venue", 1.0, 51.0, 5.0)
+
+	rank1 := Rank([]*searchv1.Result{a, b, c}, "", 51.0, 5.0, 5)
+	rank2 := Rank([]*searchv1.Result{c, a, b}, "", 51.0, 5.0, 5)
+
+	if len(rank1) != 3 || len(rank2) != 3 {
+		t.Fatalf("expected 3 results each, got %d and %d", len(rank1), len(rank2))
+	}
+	for i := range rank1 {
+		if rank1[i].Id != rank2[i].Id {
+			t.Errorf("position %d: rank1=%q rank2=%q — order not deterministic", i, rank1[i].Id, rank2[i].Id)
+		}
+	}
+	for i, id := range []string{"a", "b", "c"} {
+		if rank1[i].Id != id {
+			t.Errorf("position %d: got %q, want %q", i, rank1[i].Id, id)
+		}
+	}
+}
