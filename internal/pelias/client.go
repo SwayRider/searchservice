@@ -35,6 +35,29 @@ func New(baseURL string) *Client {
 	}
 }
 
+// Ping performs a lightweight reachability check against the Pelias API root
+// (GET {baseURL}). Pelias exposes no dedicated health endpoint, so the API root
+// doubles as the liveness signal: any 2xx response counts as UP.
+// Returns nil if the server responds successfully, or an error on network
+// failure or a non-2xx status.
+func (c *Client) Ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("pelias health check returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 type geoJSONResponse struct {
 	Features []peliasFeature `json:"features"`
 }

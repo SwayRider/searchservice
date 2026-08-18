@@ -45,7 +45,7 @@ func newTestSearchServer(flow searchFlow) *SearchServer {
 }
 
 func TestPing_returnsEmpty(t *testing.T) {
-	srv := NewHealthServer(log.New())
+	srv := NewHealthServer(nil, nil, 0, log.New())
 	resp, err := srv.Ping(context.Background(), &healthv1.PingRequest{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

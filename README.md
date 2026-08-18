@@ -76,6 +76,7 @@ Configuration is provided via environment variables or CLI flags.
 | -------------------- | -------- | ------- | ----------- |
 | `HTTP_PORT` | `-http-port` | 8080 | REST API port |
 | `GRPC_PORT` | `-grpc-port` | 8081 | gRPC port |
+| `HEALTH_PROBE_TTL_SECS` | `-health-probe-ttl-secs` | 15 | Seconds a health probe result is cached before re-probing dependencies |
 
 ### Pelias Configuration
 
@@ -271,17 +272,20 @@ Response: Same format as Search response.
 
 ### Ping
 
-Simple health check.
+Simple liveness check.
 
-- **Endpoint:** `GET /api/v1/search/ping` (gRPC: `SearchService/Ping`)
+- **Endpoint:** `GET /api/v1/health/ping` (gRPC: `HealthService/Ping`)
 - **Access:** Public
 
 ---
 
 ### Health
 
-- **Endpoint:** `GET /v1/health/ping`
+Dependency-aware readiness check.
+
+- **Endpoint:** `GET /api/v1/health` (gRPC: `HealthService/Check`)
 - **Access:** Public
+- **Behavior:** Reports `UP` when regionservice and every configured Pelias instance are reachable, `DOWN` otherwise. Probe results are cached for `HEALTH_PROBE_TTL_SECS` (default 15s).
 
 ## Building
 

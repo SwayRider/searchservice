@@ -24,6 +24,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"sort"
+	"time"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/swayrider/grpcclients"
@@ -45,6 +47,10 @@ const (
 	FldPeliasRegions     = "pelias-regions"
 	EnvPeliasRegions     = "PELIAS_REGIONS"
 	AppDataPeliasRegions = "pelias-regions-map"
+
+	FldHealthProbeTtlSecs = "health-probe-ttl-secs"
+	EnvHealthProbeTTLSecs = "HEALTH_PROBE_TTL_SECS"
+	DefHealthProbeTtlSecs = 15
 )
 
 func main() {
@@ -58,6 +64,10 @@ func main() {
 			app.NewStringConfigField(
 				FldPeliasRegions, EnvPeliasRegions,
 				"Pelias region URLs (region=url,...)", ""),
+			app.NewIntConfigField(
+				FldHealthProbeTtlSecs, EnvHealthProbeTTLSecs,
+				"How long in seconds a health probe result is cached before re-probing dependencies",
+				DefHealthProbeTtlSecs),
 		).
 		WithConfigFields(app.RateLimitConfigFields()...).
 		WithConfigFields(app.JWTKeysConfigFields()...)
@@ -141,8 +151,28 @@ func grpcSearchRegistrar(r grpc.ServiceRegistrar, a app.App) {
 
 // grpcHealthRegistrar registers the HealthService gRPC server.
 func grpcHealthRegistrar(r grpc.ServiceRegistrar, a app.App) {
-	srv := server.NewHealthServer(a.Logger())
+	regionClient := app.GetServiceClient[*regionclient.Client](a, "regionservice")
+	probeTTL := time.Duration(app.GetConfigField[int](a.Config(), FldHealthProbeTtlSecs)) * time.Second
+	srv := server.NewHealthServer(regionClient, buildPeliasProbers(a), probeTTL, a.Logger())
 	healthv1.RegisterHealthServiceServer(r, srv)
+}
+
+// buildPeliasProbers returns the configured Pelias clients as health probers,
+// ordered by region name for deterministic probing.
+func buildPeliasProbers(a app.App) []server.PeliasProber {
+	urlMap := app.GetAppData[map[string]string](a, AppDataPeliasRegions)
+
+	regions := make([]string, 0, len(urlMap))
+	for region := range urlMap {
+		regions = append(regions, region)
+	}
+	sort.Strings(regions)
+
+	probers := make([]server.PeliasProber, 0, len(regions))
+	for _, region := range regions {
+		probers = append(probers, pelias.New(urlMap[region]))
+	}
+	return probers
 }
 
 // grpcSearchGateway returns an HTTP handler for the SearchService REST gateway.
