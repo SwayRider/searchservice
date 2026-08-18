@@ -23,12 +23,12 @@ The searchservice exposes two server interfaces:
 
 Search proceeds in 3 phases, with an optional localadmin retry phase if no address results are found:
 
-1. **Phase 1 — Core regions with boundary**: Query Pelias for regions whose core area intersects the viewport, restricted to the viewport bounding box.
-2. **Phase 2 — Extended regions with boundary**: Query Pelias for extended-coverage regions not queried in Phase 1, also restricted to the viewport.
-3. **Phase 3 — Remaining configured regions with boundary**: Query any other configured Pelias servers not returned by RegionService, still with boundary restriction.
+1. **Phase 1 — Core regions with boundary**: Query Pelias for regions whose core area intersects the viewport.
+2. **Phase 2 — Extended regions with boundary**: Query Pelias for extended-coverage regions not queried in Phase 1.
+3. **Phase 3 — Remaining configured regions with boundary**: Query any other configured Pelias servers not returned by RegionService.
 4. **Localadmin retry**: If no address-layer results were found, retry with alternative queries using `localadmin` names extracted from locality results.
 
-The RegionService is called with the viewport expanded by 1× its width and height on each side to find all potentially relevant regions.
+The viewport is expanded by 1× its width and height on each side into an `extBox`. The `extBox` is sent both to RegionService (to find all potentially relevant regions) and to Pelias as `boundary.rect` (to filter results). Results are therefore restricted to the expanded box, not the raw viewport, and can come from up to ~3× the viewport area.
 
 ### Result Processing
 
