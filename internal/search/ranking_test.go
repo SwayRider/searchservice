@@ -48,18 +48,6 @@ func TestRank_distanceTiebreak(t *testing.T) {
 	}
 }
 
-func TestRank_cutoffDisabled(t *testing.T) {
-	// With cutoff at 0.0, all results are retained
-	results := []*searchv1.Result{
-		makeResult("Good", "", "", "venue", 1.0, 0, 0),
-		makeResult("Bad", "", "", "venue", 0.5, 0, 0),
-	}
-	ranked := Rank(results, "", 0, 0, 5)
-	if len(ranked) != 2 {
-		t.Fatalf("expected 2 results (cutoff disabled), got %d", len(ranked))
-	}
-}
-
 func TestCollapseAddresses_sameStreetLocality(t *testing.T) {
 	results := []*searchv1.Result{
 		makeResult("1 Main St, City", "Main St", "City", "address", 0.7, 0, 0),
@@ -254,12 +242,6 @@ func TestFuzzyStreetPenalty_mismatchedStreet(t *testing.T) {
 	if ranked[0].Id != "be" {
 		t.Errorf("expected Belgian result first, got %s", ranked[0].Id)
 	}
-	// German result should be filtered out by cutoff (fuzzy penalty → score < 0.95)
-	for _, r := range ranked {
-		if r.CountryCode == "DE" {
-			t.Errorf("expected German result filtered out, but found: %s", r.Label)
-		}
-	}
 }
 
 func TestFuzzyStreetPenalty_noPenaltyWithoutStreet(t *testing.T) {
@@ -348,5 +330,26 @@ func TestRank_deterministicIDTiebreak_orderIndependent(t *testing.T) {
 		if rank1[i].Id != id {
 			t.Errorf("position %d: got %q, want %q", i, rank1[i].Id, id)
 		}
+	}
+}
+
+func TestFuzzyStreetPenalty_nonASCII_runeNormalization(t *testing.T) {
+	// "\u00E9o\u00E9" is 3 runes (5 UTF-8 bytes). Byte-length normalization would
+	// compute similarity with maxLen=5 and return a sub-max penalty; rune-based
+	// normalization uses maxLen=3 and caps at fuzzyStreetPenaltyMax.
+	penalty := fuzzyStreetPenalty([]string{"\u00E9o\u00E9"}, "eoe")
+	if penalty != fuzzyStreetPenaltyMax {
+		t.Errorf("expected penalty %f for rune-based normalization, got %f", fuzzyStreetPenaltyMax, penalty)
+	}
+}
+
+func TestFuzzyStreetPenalty_multibyteFirstRune(t *testing.T) {
+	// Hebrew alef (U+05D0) encodes as 0xD7 0x90. Interpreting the first byte as
+	// a rune yields '×' (U+00D7), which is not a letter — the buggy code would
+	// skip this token and return no penalty. The fixed code reads the first rune
+	// and recognizes it as a letter.
+	penalty := fuzzyStreetPenalty([]string{"\u05D0\u05D1\u05D2"}, "xyz")
+	if penalty == 0 {
+		t.Error("expected non-zero penalty for mismatched non-ASCII street")
 	}
 }

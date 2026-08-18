@@ -58,6 +58,7 @@ The confidence field is overwritten with the computed ranking score clamped to [
 | `/health.v1.HealthService/Ping` | Public — no token required |
 | `/search.v1.SearchService/Search` | User JWT **or** service client token with `search:execute` scope |
 | `/search.v1.SearchService/ReverseGeocode` | User JWT **or** service client token with `search:execute` scope |
+| `/search.v1.SearchService/Autocomplete` | User JWT **or** service client token with `search:execute` scope |
 
 Service clients (e.g. swayrider-api) must obtain a token from authservice using their `clientId` and `clientSecret`, then pass it as `Authorization: Bearer <token>` in the gRPC call metadata.
 
@@ -99,7 +100,7 @@ See `.env.example` for a complete configuration example.
 
 The API is defined in `protos/search/v1/search.proto`.
 
-The `/Search` and `/ReverseGeocode` RPCs require a valid JWT (`Authorization: Bearer <token>`). The `/Ping` and `/health` endpoints are public.
+The `/Search`, `/ReverseGeocode`, and `/Autocomplete` RPCs require a valid JWT (`Authorization: Bearer <token>`). The `/Ping` and `/health` endpoints are public.
 
 ---
 
@@ -222,6 +223,47 @@ Response: Same format as Search response.
 | `UNAVAILABLE` | RegionService unreachable |
 | `NOT_FOUND` | No region found for coordinate |
 | `NOT_FOUND` | No Pelias server configured for region |
+
+---
+
+### Autocomplete
+
+Provides partial-text suggestions biased toward a focus point.
+
+- **Endpoint:** `POST /api/v1/search/autocomplete`
+- **Access:** JWT required (email verified)
+
+```bash
+curl --request POST \
+  --url http://localhost:8080/api/v1/search/autocomplete \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "text": "plaza sando",
+    "focusPoint": { "lat": 37.984, "lon": -1.128 },
+    "size": 5,
+    "language": "es"
+  }'
+```
+
+**Request fields:**
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `text` | string | yes | Partial search query |
+| `focusPoint` | Coordinate | yes | Reference point to bias suggestions toward |
+| `size` | int32 | no | Max results to return (default: 5, max: 20) |
+| `language` | string | no | BCP-47 language tag forwarded to Pelias |
+
+Response: Same format as Search response.
+
+**Error codes:**
+
+| gRPC code | Condition |
+| --------- | --------- |
+| `INVALID_ARGUMENT` | focus_point is required |
+| `UNAVAILABLE` | RegionService unreachable |
+| `UNAVAILABLE` | All configured Pelias servers unreachable |
 
 ---
 

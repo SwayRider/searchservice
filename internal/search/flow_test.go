@@ -561,3 +561,75 @@ func TestFlowAutocomplete_NaNFocusPoint_returnsInvalidArgument(t *testing.T) {
 	})
 	assertInvalidArgument(t, err)
 }
+
+func TestFlowAutocomplete_nilFocusPoint_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	_, err := flow.Autocomplete(context.Background(), &searchv1.AutocompleteRequest{Text: "test"})
+	assertInvalidArgument(t, err)
+}
+
+func TestFlowAutocomplete_success(t *testing.T) {
+	searcher := &fakePeliasSearcher{results: []*searchv1.Result{
+		{Label: "Result", Layer: "venue", Confidence: 1.0, Lat: 51.0, Lon: 4.0},
+	}}
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{"west-europe": searcher},
+		&fakeRegionSearcher{list: regionclient.RegionList{CoreRegions: []string{"west-europe"}}},
+		testLogger(),
+	)
+
+	results, err := flow.Autocomplete(context.Background(), &searchv1.AutocompleteRequest{
+		Text:       "test",
+		FocusPoint: &pbgeo.Coordinate{Lat: 51.0, Lon: 4.0},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results")
+	}
+	if searcher.callCount != 1 {
+		t.Errorf("expected 1 pelias call, got %d", searcher.callCount)
+	}
+}
+
+func TestFlowAutocomplete_regionServiceUnavailable(t *testing.T) {
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{},
+		&fakeRegionSearcher{err: errors.New("connection refused")},
+		testLogger(),
+	)
+
+	_, err := flow.Autocomplete(context.Background(), &searchv1.AutocompleteRequest{
+		Text:       "test",
+		FocusPoint: &pbgeo.Coordinate{Lat: 51.0, Lon: 4.0},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Unavailable {
+		t.Errorf("expected Unavailable, got %v", err)
+	}
+}
+
+func TestFlowAutocomplete_allPeliasError(t *testing.T) {
+	errSearcher := &fakePeliasSearcher{err: errors.New("timeout")}
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{"west-europe": errSearcher},
+		&fakeRegionSearcher{list: regionclient.RegionList{CoreRegions: []string{"west-europe"}}},
+		testLogger(),
+	)
+
+	_, err := flow.Autocomplete(context.Background(), &searchv1.AutocompleteRequest{
+		Text:       "test",
+		FocusPoint: &pbgeo.Coordinate{Lat: 51.0, Lon: 4.0},
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.Unavailable {
+		t.Errorf("expected Unavailable, got %v", err)
+	}
+}
