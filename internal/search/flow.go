@@ -83,6 +83,10 @@ func NewSearchFlow(
 func (f *SearchFlow) Search(ctx context.Context, req *searchv1.SearchRequest) ([]*searchv1.Result, error) {
 	lg := f.logger.Derive(log.WithFunction("Search"))
 
+	if strings.TrimSpace(req.Text) == "" {
+		return nil, status.Error(codes.InvalidArgument, "text is required")
+	}
+
 	vp := req.Viewport
 	if vp == nil {
 		return nil, status.Error(codes.InvalidArgument, "viewport is required")
@@ -368,6 +372,10 @@ func (f *SearchFlow) retryWithLocaladmin(
 // Results from core regions are ranked and returned before results from extended regions.
 func (f *SearchFlow) Autocomplete(ctx context.Context, req *searchv1.AutocompleteRequest) ([]*searchv1.Result, error) {
 	lg := f.logger.Derive(log.WithFunction("Autocomplete"))
+
+	if strings.TrimSpace(req.Text) == "" {
+		return nil, status.Error(codes.InvalidArgument, "text is required")
+	}
 
 	if req.FocusPoint == nil {
 		return nil, status.Error(codes.InvalidArgument, "focus_point is required")

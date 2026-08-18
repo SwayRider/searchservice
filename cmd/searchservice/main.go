@@ -23,9 +23,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
-	"google.golang.org/grpc"
 	"github.com/swayrider/grpcclients"
 	"github.com/swayrider/grpcclients/authclient"
 	"github.com/swayrider/grpcclients/regionclient"
@@ -38,11 +38,13 @@ import (
 	"github.com/swayrider/swlib/app"
 	"github.com/swayrider/swlib/jwtkeys"
 	log "github.com/swayrider/swlib/logger"
+	"google.golang.org/grpc"
 )
 
 const (
-	FldPeliasRegions = "pelias-regions"
-	EnvPeliasRegions = "PELIAS_REGIONS"
+	FldPeliasRegions     = "pelias-regions"
+	EnvPeliasRegions     = "PELIAS_REGIONS"
+	AppDataPeliasRegions = "pelias-regions-map"
 )
 
 func main() {
@@ -85,16 +87,18 @@ func main() {
 	application.Run()
 }
 
-// bootstrapFn validates configuration on startup.
+// bootstrapFn validates configuration on startup and stores the parsed Pelias
+// region map so the gRPC registrar does not re-parse it.
 func bootstrapFn(a app.App) error {
 	lg := a.Logger().Derive(log.WithFunction("bootstrap"))
 	lg.Infoln("Bootstrapping service ...")
 
 	peliasRegions := app.GetConfigField[string](a.Config(), FldPeliasRegions)
-	_, err := config.ParsePeliasRegions(peliasRegions)
+	urlMap, err := config.ParsePeliasRegions(peliasRegions)
 	if err != nil {
-		lg.Fatalf("invalid PELIAS_REGIONS: %v", err)
+		panic(fmt.Sprintf("invalid PELIAS_REGIONS: %v", err))
 	}
+	app.SetAppData(a, AppDataPeliasRegions, urlMap)
 	return nil
 }
 
@@ -122,11 +126,7 @@ func regionServiceClientCtor(a app.App) grpcclients.Client {
 
 // grpcSearchRegistrar registers the SearchService gRPC server.
 func grpcSearchRegistrar(r grpc.ServiceRegistrar, a app.App) {
-	peliasRegions := app.GetConfigField[string](a.Config(), FldPeliasRegions)
-	urlMap, err := config.ParsePeliasRegions(peliasRegions)
-	if err != nil {
-		a.Logger().Fatalf("invalid PELIAS_REGIONS: %v", err)
-	}
+	urlMap := app.GetAppData[map[string]string](a, AppDataPeliasRegions)
 
 	peliasClients := make(map[string]search.PeliasSearcher, len(urlMap))
 	for region, url := range urlMap {

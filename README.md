@@ -51,6 +51,8 @@ score = confidence + textMatchBonus + housenumberBonus - distancePenalty - stree
 
 The confidence field is overwritten with the computed ranking score clamped to [0, 1].
 
+**Label formatting:** Pelias labels are post-processed per country in `internal/pelias/labels.go`. The generic formatter currently covers the dev-mini regions — street-first (`BE`, `NL`, `DE`) and number-first (`LU`, `FR`). New country formatters must be added there when expanding beyond these regions.
+
 ## Authorization
 
 | gRPC endpoint | Access |

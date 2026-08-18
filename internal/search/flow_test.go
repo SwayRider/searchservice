@@ -633,3 +633,24 @@ func TestFlowAutocomplete_allPeliasError(t *testing.T) {
 		t.Errorf("expected Unavailable, got %v", err)
 	}
 }
+
+func TestFlow_emptyText_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	_, err := flow.Search(context.Background(), makeSearchReq(""))
+	assertInvalidArgument(t, err)
+}
+
+func TestFlow_whitespaceText_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	_, err := flow.Search(context.Background(), makeSearchReq("   "))
+	assertInvalidArgument(t, err)
+}
+
+func TestFlowAutocomplete_emptyText_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	_, err := flow.Autocomplete(context.Background(), &searchv1.AutocompleteRequest{
+		Text:       "",
+		FocusPoint: &pbgeo.Coordinate{Lat: 0, Lon: 0},
+	})
+	assertInvalidArgument(t, err)
+}
