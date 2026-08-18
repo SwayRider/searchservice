@@ -3,21 +3,25 @@ package search
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"github.com/swayrider/grpcclients/regionclient"
 	pbgeo "github.com/swayrider/protos/common_types/geo"
 	searchv1 "github.com/swayrider/protos/search/v1"
 	log "github.com/swayrider/swlib/logger"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // fakePeliasSearcher records calls and returns configured responses.
 type fakePeliasSearcher struct {
-	results   []*searchv1.Result
-	err       error
-	callCount int
+	results      []*searchv1.Result
+	err          error
+	callCount    int
+	lastSize     int
+	lastFocusLat float64
+	lastFocusLon float64
 }
 
 func (f *fakePeliasSearcher) Search(
@@ -29,6 +33,8 @@ func (f *fakePeliasSearcher) Search(
 	hasBoundary bool,
 ) ([]*searchv1.Result, error) {
 	f.callCount++
+	f.lastFocusLat = focusLat
+	f.lastFocusLon = focusLon
 	return f.results, f.err
 }
 
@@ -38,6 +44,8 @@ func (f *fakePeliasSearcher) Autocomplete(
 	focusLat, focusLon float64,
 ) ([]*searchv1.Result, error) {
 	f.callCount++
+	f.lastFocusLat = focusLat
+	f.lastFocusLon = focusLon
 	return f.results, f.err
 }
 
@@ -48,16 +56,19 @@ func (f *fakePeliasSearcher) Reverse(
 	language string,
 ) ([]*searchv1.Result, error) {
 	f.callCount++
+	f.lastSize = size
 	return f.results, f.err
 }
 
 // fakeRegionSearcher returns configured region lists.
 type fakeRegionSearcher struct {
-	list regionclient.RegionList
-	err  error
+	list    regionclient.RegionList
+	err     error
+	lastBox regionclient.BoundingBox
 }
 
 func (f *fakeRegionSearcher) SearchBox(_ context.Context, _ string, bb regionclient.BoundingBox, includeExtended bool) (regionclient.RegionList, error) {
+	f.lastBox = bb
 	return f.list, f.err
 }
 
@@ -322,4 +333,231 @@ func TestFlow_localadminRetry(t *testing.T) {
 	if searcher.callCount < 2 {
 		t.Errorf("expected at least 2 calls (original + retry), got %d", searcher.callCount)
 	}
+}
+
+func assertInvalidArgument(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected InvalidArgument error, got nil")
+	}
+	st, ok := status.FromError(err)
+	if !ok || st.Code() != codes.InvalidArgument {
+		t.Errorf("expected InvalidArgument, got %v", err)
+	}
+}
+
+func withinEpsilon(a, b float64) bool {
+	return math.Abs(a-b) < 1e-6
+}
+
+func TestFlow_nilViewport_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	_, err := flow.Search(context.Background(), &searchv1.SearchRequest{Text: "test"})
+	assertInvalidArgument(t, err)
+}
+
+func TestFlow_viewportMissingBothCorners_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	req := &searchv1.SearchRequest{Text: "test", Viewport: &pbgeo.BoundingBox{}}
+	_, err := flow.Search(context.Background(), req)
+	assertInvalidArgument(t, err)
+}
+
+func TestFlow_viewportMissingOneCorner_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	req := &searchv1.SearchRequest{
+		Text: "test",
+		Viewport: &pbgeo.BoundingBox{
+			BottomLeft: &pbgeo.Coordinate{Lat: 37.8, Lon: -1.2},
+		},
+	}
+	_, err := flow.Search(context.Background(), req)
+	assertInvalidArgument(t, err)
+}
+
+func TestFlow_invertedLatitude_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	req := &searchv1.SearchRequest{
+		Text: "test",
+		Viewport: &pbgeo.BoundingBox{
+			BottomLeft: &pbgeo.Coordinate{Lat: 38.2, Lon: -1.2},
+			TopRight:   &pbgeo.Coordinate{Lat: 37.8, Lon: -0.8},
+		},
+	}
+	_, err := flow.Search(context.Background(), req)
+	assertInvalidArgument(t, err)
+}
+
+func TestFlow_outOfRangeLatitude_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	req := &searchv1.SearchRequest{
+		Text: "test",
+		Viewport: &pbgeo.BoundingBox{
+			BottomLeft: &pbgeo.Coordinate{Lat: 37.8, Lon: -1.2},
+			TopRight:   &pbgeo.Coordinate{Lat: 91, Lon: -0.8},
+		},
+	}
+	_, err := flow.Search(context.Background(), req)
+	assertInvalidArgument(t, err)
+}
+
+func TestFlow_outOfRangeLongitude_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	req := &searchv1.SearchRequest{
+		Text: "test",
+		Viewport: &pbgeo.BoundingBox{
+			BottomLeft: &pbgeo.Coordinate{Lat: 37.8, Lon: -1.2},
+			TopRight:   &pbgeo.Coordinate{Lat: 38.2, Lon: 181},
+		},
+	}
+	_, err := flow.Search(context.Background(), req)
+	assertInvalidArgument(t, err)
+}
+
+func TestFlow_NaNCoordinate_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	req := &searchv1.SearchRequest{
+		Text: "test",
+		Viewport: &pbgeo.BoundingBox{
+			BottomLeft: &pbgeo.Coordinate{Lat: 37.8, Lon: -1.2},
+			TopRight:   &pbgeo.Coordinate{Lat: math.NaN(), Lon: -0.8},
+		},
+	}
+	_, err := flow.Search(context.Background(), req)
+	assertInvalidArgument(t, err)
+}
+
+func TestFlow_focusPointOutOfRange_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	req := makeSearchReq("test")
+	req.FocusPoint = &pbgeo.Coordinate{Lat: 91, Lon: 0}
+	_, err := flow.Search(context.Background(), req)
+	assertInvalidArgument(t, err)
+}
+
+func TestFlow_focusPointNaN_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	req := makeSearchReq("test")
+	req.FocusPoint = &pbgeo.Coordinate{Lat: 0, Lon: math.NaN()}
+	_, err := flow.Search(context.Background(), req)
+	assertInvalidArgument(t, err)
+}
+
+func TestFlow_datelineCrossingViewport_wrapsBoxAndFocus(t *testing.T) {
+	searcher := &fakePeliasSearcher{results: []*searchv1.Result{
+		{Label: "Result", Layer: "venue", Confidence: 1.0, Lat: 0, Lon: 180},
+	}}
+	regionSearcher := &fakeRegionSearcher{list: regionclient.RegionList{
+		CoreRegions: []string{"pacific"},
+	}}
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{"pacific": searcher},
+		regionSearcher,
+		testLogger(),
+	)
+
+	req := &searchv1.SearchRequest{
+		Text: "test",
+		Viewport: &pbgeo.BoundingBox{
+			BottomLeft: &pbgeo.Coordinate{Lat: -10, Lon: 179},
+			TopRight:   &pbgeo.Coordinate{Lat: 10, Lon: -179},
+		},
+	}
+	results, err := flow.Search(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results")
+	}
+	if !withinEpsilon(regionSearcher.lastBox.BottomLeft.Longitude, 177) {
+		t.Errorf("bottom_left lon: got %v, want 177", regionSearcher.lastBox.BottomLeft.Longitude)
+	}
+	if !withinEpsilon(regionSearcher.lastBox.TopRight.Longitude, -177) {
+		t.Errorf("top_right lon: got %v, want -177", regionSearcher.lastBox.TopRight.Longitude)
+	}
+	if !withinEpsilon(math.Abs(searcher.lastFocusLon), 180) {
+		t.Errorf("focus lon: got %v, want ±180", searcher.lastFocusLon)
+	}
+}
+
+func TestFlow_nearEdgeViewport_clampsExpandedBox(t *testing.T) {
+	searcher := &fakePeliasSearcher{results: []*searchv1.Result{
+		{Label: "Result", Layer: "venue", Confidence: 1.0, Lat: 0, Lon: 175},
+	}}
+	regionSearcher := &fakeRegionSearcher{list: regionclient.RegionList{
+		CoreRegions: []string{"pacific"},
+	}}
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{"pacific": searcher},
+		regionSearcher,
+		testLogger(),
+	)
+
+	req := &searchv1.SearchRequest{
+		Text: "test",
+		Viewport: &pbgeo.BoundingBox{
+			BottomLeft: &pbgeo.Coordinate{Lat: -10, Lon: 170},
+			TopRight:   &pbgeo.Coordinate{Lat: 10, Lon: 180},
+		},
+	}
+	results, err := flow.Search(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results")
+	}
+	if !withinEpsilon(regionSearcher.lastBox.BottomLeft.Longitude, 160) {
+		t.Errorf("bottom_left lon: got %v, want 160", regionSearcher.lastBox.BottomLeft.Longitude)
+	}
+	if !withinEpsilon(regionSearcher.lastBox.TopRight.Longitude, 180) {
+		t.Errorf("top_right lon: got %v, want 180", regionSearcher.lastBox.TopRight.Longitude)
+	}
+}
+
+func TestFlowAutocomplete_datelineFocusPoint_wrapsBox(t *testing.T) {
+	searcher := &fakePeliasSearcher{results: []*searchv1.Result{
+		{Label: "Result", Layer: "venue", Confidence: 1.0, Lat: 0, Lon: 179.9},
+	}}
+	regionSearcher := &fakeRegionSearcher{list: regionclient.RegionList{
+		CoreRegions: []string{"pacific"},
+	}}
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{"pacific": searcher},
+		regionSearcher,
+		testLogger(),
+	)
+
+	_, err := flow.Autocomplete(context.Background(), &searchv1.AutocompleteRequest{
+		Text:       "test",
+		FocusPoint: &pbgeo.Coordinate{Lat: 0, Lon: 179.9},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !withinEpsilon(regionSearcher.lastBox.BottomLeft.Longitude, 179.4) {
+		t.Errorf("bottom_left lon: got %v, want ~179.4", regionSearcher.lastBox.BottomLeft.Longitude)
+	}
+	if !withinEpsilon(regionSearcher.lastBox.TopRight.Longitude, -179.6) {
+		t.Errorf("top_right lon: got %v, want ~-179.6", regionSearcher.lastBox.TopRight.Longitude)
+	}
+}
+
+func TestFlowAutocomplete_outOfRangeFocusPoint_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	_, err := flow.Autocomplete(context.Background(), &searchv1.AutocompleteRequest{
+		Text:       "test",
+		FocusPoint: &pbgeo.Coordinate{Lat: 91, Lon: 0},
+	})
+	assertInvalidArgument(t, err)
+}
+
+func TestFlowAutocomplete_NaNFocusPoint_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	_, err := flow.Autocomplete(context.Background(), &searchv1.AutocompleteRequest{
+		Text:       "test",
+		FocusPoint: &pbgeo.Coordinate{Lat: 0, Lon: math.NaN()},
+	})
+	assertInvalidArgument(t, err)
 }

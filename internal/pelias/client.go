@@ -66,6 +66,8 @@ type peliasGeometry struct {
 // Search queries Pelias for the given text.
 // If hasFocus is true, focus.point params are sent so Pelias biases its scoring.
 // If hasBoundary is true, boundary.rect params are sent to geographically filter results.
+// A boundary with minLon > maxLon is treated as an antimeridian-crossing box and is
+// split into two non-wrapping rect queries whose results are merged.
 // Returns (nil, error) on network or HTTP error; caller should log and skip.
 func (c *Client) Search(
 	ctx context.Context,
@@ -76,21 +78,54 @@ func (c *Client) Search(
 	minLat, minLon, maxLat, maxLon float64,
 	hasBoundary bool,
 ) ([]*searchv1.Result, error) {
-	params := url.Values{}
-	params.Set("text", text)
-	params.Set("layers", peliasLayers)
-	params.Set("size", strconv.Itoa(peliasSize))
+	base := url.Values{}
+	base.Set("text", text)
+	base.Set("layers", peliasLayers)
+	base.Set("size", strconv.Itoa(peliasSize))
 	if hasFocus {
-		params.Set("focus.point.lat", strconv.FormatFloat(focusLat, 'f', -1, 64))
-		params.Set("focus.point.lon", strconv.FormatFloat(focusLon, 'f', -1, 64))
-	}
-	if hasBoundary {
-		params.Set("boundary.rect.min_lat", strconv.FormatFloat(minLat, 'f', -1, 64))
-		params.Set("boundary.rect.min_lon", strconv.FormatFloat(minLon, 'f', -1, 64))
-		params.Set("boundary.rect.max_lat", strconv.FormatFloat(maxLat, 'f', -1, 64))
-		params.Set("boundary.rect.max_lon", strconv.FormatFloat(maxLon, 'f', -1, 64))
+		base.Set("focus.point.lat", strconv.FormatFloat(focusLat, 'f', -1, 64))
+		base.Set("focus.point.lon", strconv.FormatFloat(focusLon, 'f', -1, 64))
 	}
 
+	if !hasBoundary {
+		return c.searchRaw(ctx, base, language)
+	}
+
+	if minLon > maxLon {
+		// Antimeridian-crossing box: split into [minLon, 180] and [-180, maxLon].
+		first := cloneValues(base)
+		first.Set("boundary.rect.min_lat", strconv.FormatFloat(minLat, 'f', -1, 64))
+		first.Set("boundary.rect.min_lon", strconv.FormatFloat(minLon, 'f', -1, 64))
+		first.Set("boundary.rect.max_lat", strconv.FormatFloat(maxLat, 'f', -1, 64))
+		first.Set("boundary.rect.max_lon", strconv.Itoa(180))
+
+		second := cloneValues(base)
+		second.Set("boundary.rect.min_lat", strconv.FormatFloat(minLat, 'f', -1, 64))
+		second.Set("boundary.rect.min_lon", strconv.Itoa(-180))
+		second.Set("boundary.rect.max_lat", strconv.FormatFloat(maxLat, 'f', -1, 64))
+		second.Set("boundary.rect.max_lon", strconv.FormatFloat(maxLon, 'f', -1, 64))
+
+		res1, err := c.searchRaw(ctx, first, language)
+		if err != nil {
+			return nil, err
+		}
+		res2, err := c.searchRaw(ctx, second, language)
+		if err != nil {
+			return nil, err
+		}
+		return mergeResults(res1, res2), nil
+	}
+
+	base.Set("boundary.rect.min_lat", strconv.FormatFloat(minLat, 'f', -1, 64))
+	base.Set("boundary.rect.min_lon", strconv.FormatFloat(minLon, 'f', -1, 64))
+	base.Set("boundary.rect.max_lat", strconv.FormatFloat(maxLat, 'f', -1, 64))
+	base.Set("boundary.rect.max_lon", strconv.FormatFloat(maxLon, 'f', -1, 64))
+	return c.searchRaw(ctx, base, language)
+}
+
+// searchRaw performs a single /search request with the given query params and
+// decodes the response into results.
+func (c *Client) searchRaw(ctx context.Context, params url.Values, language string) ([]*searchv1.Result, error) {
 	endpoint := fmt.Sprintf("%s/search?%s", c.baseURL, strings.ReplaceAll(params.Encode(), "+", "%20"))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
@@ -159,6 +194,35 @@ func (c *Client) Search(
 		})
 	}
 	return results, nil
+}
+
+// cloneValues returns a shallow copy of v so callers can mutate it independently.
+func cloneValues(v url.Values) url.Values {
+	c := make(url.Values, len(v))
+	for k, vs := range v {
+		c[k] = append([]string(nil), vs...)
+	}
+	return c
+}
+
+// mergeResults concatenates two result slices, dropping duplicate ids that
+// appear in both (features on the antimeridian seam can match both rects).
+func mergeResults(a, b []*searchv1.Result) []*searchv1.Result {
+	merged := make([]*searchv1.Result, 0, len(a)+len(b))
+	seen := make(map[string]bool)
+	for _, r := range a {
+		merged = append(merged, r)
+		if r.Id != "" {
+			seen[r.Id] = true
+		}
+	}
+	for _, r := range b {
+		if r.Id != "" && seen[r.Id] {
+			continue
+		}
+		merged = append(merged, r)
+	}
+	return merged
 }
 
 // Response is an alias for the result slice, used by the Reverse method.

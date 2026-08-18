@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	searchv1 "github.com/swayrider/protos/search/v1"
 )
 
 func makeFeature(label, countryCode, layer string, lon, lat float64) map[string]interface{} {
@@ -279,5 +281,47 @@ func TestSearch_alwaysSendsTextLayersSize(t *testing.T) {
 	_, err := client.Search(context.Background(), "hello world", "", 0, 0, false, 0, 0, 0, 0, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSearch_antimeridianBoundarySplitsIntoTwoRects(t *testing.T) {
+	var minLons, maxLons []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		minLons = append(minLons, q.Get("boundary.rect.min_lon"))
+		maxLons = append(maxLons, q.Get("boundary.rect.max_lon"))
+		resp := map[string]interface{}{"features": []interface{}{}}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := New(server.URL)
+	// minLon=177 > maxLon=-177 → antimeridian-crossing box
+	_, err := client.Search(context.Background(), "Test", "", 0, 0, false, -10, 177, 10, -177, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(minLons) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(minLons))
+	}
+	if minLons[0] != "177" || maxLons[0] != "180" {
+		t.Errorf("first rect: min_lon=%q max_lon=%q, want 177/180", minLons[0], maxLons[0])
+	}
+	if minLons[1] != "-180" || maxLons[1] != "-177" {
+		t.Errorf("second rect: min_lon=%q max_lon=%q, want -180/-177", minLons[1], maxLons[1])
+	}
+}
+
+func TestMergeResults_dedupsSharedIds(t *testing.T) {
+	a := []*searchv1.Result{{Id: "1"}, {Id: "2"}}
+	b := []*searchv1.Result{{Id: "2"}, {Id: "3"}}
+	merged := mergeResults(a, b)
+	if len(merged) != 3 {
+		t.Fatalf("expected 3 merged results, got %d", len(merged))
+	}
+	if merged[0].Id != "1" || merged[1].Id != "2" || merged[2].Id != "3" {
+		t.Errorf("unexpected merge order: [%s, %s, %s]", merged[0].Id, merged[1].Id, merged[2].Id)
 	}
 }
