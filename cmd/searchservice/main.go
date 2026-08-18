@@ -23,7 +23,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
@@ -37,20 +36,16 @@ import (
 	"github.com/swayrider/searchservice/internal/search"
 	"github.com/swayrider/searchservice/internal/server"
 	"github.com/swayrider/swlib/app"
-	"github.com/swayrider/swlib/cache"
+	"github.com/swayrider/swlib/jwtkeys"
 	log "github.com/swayrider/swlib/logger"
 )
 
 const (
 	FldPeliasRegions = "pelias-regions"
 	EnvPeliasRegions = "PELIAS_REGIONS"
-
-	jwtPublicKeys cache.LocalCacheKey = "jwt_public_keys"
 )
 
 func main() {
-	keyChan := make(chan []string)
-
 	application := app.New("searchservice").
 		WithDefaultConfigFields(app.BackendServiceFields, app.FlagGroupOverrides{}).
 		WithServiceClients(
@@ -62,11 +57,14 @@ func main() {
 				FldPeliasRegions, EnvPeliasRegions,
 				"Pelias region URLs (region=url,...)", ""),
 		).
-		WithConfigFields(app.RateLimitConfigFields()...)
+		WithConfigFields(app.RateLimitConfigFields()...).
+		WithConfigFields(app.JWTKeysConfigFields()...)
+
+	jwtKeyCache := jwtkeys.New(application.Logger())
 
 	grpcConfig := app.NewGrpcConfig(
 		app.AuthInterceptor|app.ClientInfoInterceptor|app.RateLimitInterceptor,
-		getPublicKeys,
+		jwtKeyCache.GetPublicKeys,
 		app.GrpcServiceHooks{
 			ServiceRegistrar:   grpcSearchRegistrar,
 			ServiceHTTPHandler: grpcSearchGateway(application),
@@ -79,11 +77,10 @@ func main() {
 
 	application = application.
 		WithBackgroundRoutines(
-			publicKeyListener(keyChan),
-			publicKeyFetcher(keyChan),
+			app.JWTKeysFetcher(jwtKeyCache),
 			app.RateLimitEvictor(grpcConfig),
 		).
-		WithInitializers(bootstrapFn, app.RateLimiterInitializer(grpcConfig)).
+		WithInitializers(bootstrapFn, app.JWTKeysInitializer(jwtKeyCache), app.RateLimiterInitializer(grpcConfig)).
 		WithGrpc(grpcConfig)
 	application.Run()
 }
@@ -99,42 +96,6 @@ func bootstrapFn(a app.App) error {
 		lg.Fatalf("invalid PELIAS_REGIONS: %v", err)
 	}
 	return nil
-}
-
-func publicKeyListener(keyChan chan []string) func(app.App) {
-	return func(a app.App) {
-		ctx := a.BackgroundContext()
-		defer a.BackgroundWaitGroup().Done()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case keys := <-keyChan:
-				cache.LCSet(jwtPublicKeys, keys)
-			}
-		}
-	}
-}
-
-func publicKeyFetcher(keyChan chan []string) func(app.App) {
-	return func(a app.App) {
-		ctx := a.BackgroundContext()
-		defer a.BackgroundWaitGroup().Done()
-		clnt := app.GetServiceClient[*authclient.Client](a, "authservice")
-		authclient.PublicKeyFetcher(ctx, clnt, keyChan)
-	}
-}
-
-func getPublicKeys() ([]string, error) {
-	keysIface, ok := cache.LCGet(jwtPublicKeys)
-	if !ok {
-		return nil, fmt.Errorf("no public keys found")
-	}
-	keys, ok := keysIface.([]string)
-	if !ok {
-		return nil, fmt.Errorf("invalid public keys")
-	}
-	return keys, nil
 }
 
 // authServiceClientCtor creates a new auth service gRPC client.
