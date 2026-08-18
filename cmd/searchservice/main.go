@@ -62,14 +62,10 @@ func main() {
 				FldPeliasRegions, EnvPeliasRegions,
 				"Pelias region URLs (region=url,...)", ""),
 		).
-		WithBackgroundRoutines(
-			publicKeyListener(keyChan),
-			publicKeyFetcher(keyChan),
-		).
-		WithInitializers(bootstrapFn)
+		WithConfigFields(app.RateLimitConfigFields()...)
 
 	grpcConfig := app.NewGrpcConfig(
-		app.AuthInterceptor|app.ClientInfoInterceptor,
+		app.AuthInterceptor|app.ClientInfoInterceptor|app.RateLimitInterceptor,
 		getPublicKeys,
 		app.GrpcServiceHooks{
 			ServiceRegistrar:   grpcSearchRegistrar,
@@ -80,7 +76,15 @@ func main() {
 			ServiceHTTPHandler: grpcHealthGateway(application),
 		},
 	)
-	application = application.WithGrpc(grpcConfig)
+
+	application = application.
+		WithBackgroundRoutines(
+			publicKeyListener(keyChan),
+			publicKeyFetcher(keyChan),
+			app.RateLimitEvictor(grpcConfig),
+		).
+		WithInitializers(bootstrapFn, app.RateLimiterInitializer(grpcConfig)).
+		WithGrpc(grpcConfig)
 	application.Run()
 }
 
