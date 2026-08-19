@@ -77,6 +77,7 @@ Configuration is provided via environment variables or CLI flags.
 | `HTTP_PORT` | `-http-port` | 8080 | REST API port |
 | `GRPC_PORT` | `-grpc-port` | 8081 | gRPC port |
 | `HEALTH_PROBE_TTL_SECS` | `-health-probe-ttl-secs` | 15 | Seconds a health probe result is cached before re-probing dependencies |
+| `LOG_LEVEL` | `-log-level` | info | Log verbosity level |
 
 ### Pelias Configuration
 
@@ -97,7 +98,7 @@ The region names must match the values returned by RegionService (e.g. `iberian-
 | `AUTHSERVICE_HOST` | `-authservice-host` | | AuthService host |
 | `AUTHSERVICE_PORT` | `-authservice-port` | | AuthService gRPC port |
 
-See `.env.example` for a complete configuration example.
+See `env.example` for a complete configuration example.
 
 ## API Reference
 
@@ -290,18 +291,17 @@ Dependency-aware readiness check.
 ## Building
 
 ```bash
-# Generate protobuf code (run from repo root)
-make proto
+# Generate protobuf code (from repo root)
+cd protos && make
 
 # Build the service
-cd backend
-go build ./services/searchservice/cmd/searchservice
+go build ./cmd/searchservice
 
 # Run tests
-go test ./services/searchservice/...
+go test ./...
 
 # Run the service
-go run ./services/searchservice/cmd/searchservice
+go run ./cmd/searchservice
 ```
 
 ## Docker
@@ -310,6 +310,19 @@ go run ./services/searchservice/cmd/searchservice
 # Build container (from searchservice/ directory)
 make container-build
 ```
+
+### Tagging
+
+Tags are derived from the git state of the checkout:
+
+| Branch / state | Tags applied |
+|----------------|--------------|
+| Version-tagged commit (`v1.2.3`) | `v1.2.3`, `latest` |
+| `main` (untagged) | `v{last}-{date}-dev-b{N}`, `dev-latest` |
+| Other branch | `v{last}-{branch}-b{N}` |
+| Detached HEAD | `v{last}-{sha}-b{N}` |
+
+Non-release builds get an incrementing build number (`-b{N}`) so repeated builds of the same branch don't overwrite each other. The number comes from querying the registry for the highest existing `-b{N}` tag on the same base tag and adding 1; the build fails if the registry can't be reached. Release builds are immutable and never get a build number.
 
 ### FORCE_DEV_LATEST
 
