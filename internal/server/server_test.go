@@ -5,12 +5,12 @@ import (
 	"errors"
 	"testing"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-	healthv1 "github.com/swayrider/protos/health/v1"
 	pbgeo "github.com/swayrider/protos/common_types/geo"
+	healthv1 "github.com/swayrider/protos/health/v1"
 	searchv1 "github.com/swayrider/protos/search/v1"
 	log "github.com/swayrider/swlib/logger"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type mockSearchFlow struct {
@@ -45,7 +45,7 @@ func newTestSearchServer(flow searchFlow) *SearchServer {
 }
 
 func TestPing_returnsEmpty(t *testing.T) {
-	srv := NewHealthServer(log.New())
+	srv := NewHealthServer(nil, nil, 0, log.New())
 	resp, err := srv.Ping(context.Background(), &healthv1.PingRequest{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -127,6 +127,49 @@ func TestReverseGeocode_propagatesError(t *testing.T) {
 
 	req := &searchv1.ReverseGeocodeRequest{Point: &pbgeo.Coordinate{Lat: 51.22, Lon: 4.40}}
 	_, err := srv.ReverseGeocode(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestAutocomplete_success(t *testing.T) {
+	want := []*searchv1.Result{
+		{Id: "ac1", Label: "Plaza Sandoval, Murcia", Layer: "venue", Confidence: 0.8},
+	}
+	srv := newTestSearchServer(&mockSearchFlow{
+		autocompleteFn: func(_ context.Context, _ *searchv1.AutocompleteRequest) ([]*searchv1.Result, error) {
+			return want, nil
+		},
+	})
+
+	req := &searchv1.AutocompleteRequest{
+		Text:       "plaza",
+		FocusPoint: &pbgeo.Coordinate{Lat: 37.984, Lon: -1.128},
+	}
+	resp, err := srv.Autocomplete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(resp.Results))
+	}
+	if resp.Results[0].Id != "ac1" {
+		t.Errorf("expected id=ac1, got %q", resp.Results[0].Id)
+	}
+}
+
+func TestAutocomplete_propagatesError(t *testing.T) {
+	srv := newTestSearchServer(&mockSearchFlow{
+		autocompleteFn: func(_ context.Context, _ *searchv1.AutocompleteRequest) ([]*searchv1.Result, error) {
+			return nil, errors.New("internal error")
+		},
+	})
+
+	req := &searchv1.AutocompleteRequest{
+		Text:       "plaza",
+		FocusPoint: &pbgeo.Coordinate{Lat: 37.984, Lon: -1.128},
+	}
+	_, err := srv.Autocomplete(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error")
 	}

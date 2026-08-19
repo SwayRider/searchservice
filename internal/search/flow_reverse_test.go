@@ -3,13 +3,14 @@ package search
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"github.com/swayrider/grpcclients/regionclient"
 	pbgeo "github.com/swayrider/protos/common_types/geo"
 	searchv1 "github.com/swayrider/protos/search/v1"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func makeReverseReq(lat, lon float64) *searchv1.ReverseGeocodeRequest {
@@ -157,5 +158,88 @@ func TestFlowReverse_fallbackToExtended(t *testing.T) {
 	}
 	if extended.callCount != 1 {
 		t.Errorf("expected 1 pelias call, got %d", extended.callCount)
+	}
+}
+
+func TestFlowReverse_clampsOversizedSize(t *testing.T) {
+	searcher := &fakePeliasSearcher{results: []*searchv1.Result{
+		{Id: "r1", Label: "x", Layer: "venue", Confidence: 0.5},
+	}}
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{"west-europe": searcher},
+		&fakeRegionSearcher{list: regionclient.RegionList{CoreRegions: []string{"west-europe"}}},
+		testLogger(),
+	)
+
+	size := int32(100000)
+	_, err := flow.ReverseGeocode(context.Background(), &searchv1.ReverseGeocodeRequest{
+		Point: &pbgeo.Coordinate{Lat: 51.0, Lon: 4.0},
+		Size:  &size,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if searcher.lastSize != maxSize {
+		t.Errorf("size: got %d, want %d", searcher.lastSize, maxSize)
+	}
+}
+
+func TestFlowReverse_normalizesNonPositiveSize(t *testing.T) {
+	searcher := &fakePeliasSearcher{results: []*searchv1.Result{
+		{Id: "r1", Label: "x", Layer: "venue", Confidence: 0.5},
+	}}
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{"west-europe": searcher},
+		&fakeRegionSearcher{list: regionclient.RegionList{CoreRegions: []string{"west-europe"}}},
+		testLogger(),
+	)
+
+	size := int32(0)
+	_, err := flow.ReverseGeocode(context.Background(), &searchv1.ReverseGeocodeRequest{
+		Point: &pbgeo.Coordinate{Lat: 51.0, Lon: 4.0},
+		Size:  &size,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if searcher.lastSize != 10 {
+		t.Errorf("size: got %d, want 10", searcher.lastSize)
+	}
+}
+
+func TestFlowReverse_pointOutOfRange_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	_, err := flow.ReverseGeocode(context.Background(), makeReverseReq(51.0, 181))
+	assertInvalidArgument(t, err)
+}
+
+func TestFlowReverse_pointNaN_returnsInvalidArgument(t *testing.T) {
+	flow := NewSearchFlow(map[string]PeliasSearcher{}, &fakeRegionSearcher{}, testLogger())
+	_, err := flow.ReverseGeocode(context.Background(), makeReverseReq(math.NaN(), 4.0))
+	assertInvalidArgument(t, err)
+}
+
+func TestFlowReverse_datelinePoint_wrapsBox(t *testing.T) {
+	searcher := &fakePeliasSearcher{results: []*searchv1.Result{
+		{Id: "r1", Label: "x", Layer: "venue", Confidence: 0.5},
+	}}
+	regionSearcher := &fakeRegionSearcher{list: regionclient.RegionList{
+		CoreRegions: []string{"pacific"},
+	}}
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{"pacific": searcher},
+		regionSearcher,
+		testLogger(),
+	)
+
+	_, err := flow.ReverseGeocode(context.Background(), makeReverseReq(0, 180))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !withinEpsilon(regionSearcher.lastBox.BottomLeft.Longitude, 179.999) {
+		t.Errorf("bottom_left lon: got %v, want ~179.999", regionSearcher.lastBox.BottomLeft.Longitude)
+	}
+	if !withinEpsilon(regionSearcher.lastBox.TopRight.Longitude, -179.999) {
+		t.Errorf("top_right lon: got %v, want ~-179.999", regionSearcher.lastBox.TopRight.Longitude)
 	}
 }

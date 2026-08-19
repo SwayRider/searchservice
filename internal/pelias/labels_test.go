@@ -4,7 +4,7 @@ import "testing"
 
 func TestFormatLabel_address(t *testing.T) {
 	// Address with name matching street+number → no duplication
-	label := formatLabel("BE", "Oosthamsesteenweg 8", "address", "Oosthamsesteenweg", "8", "Balen", "Kwaadmechelen", "Antwerpen", "België")
+	label := formatLabel("BE", "Oosthamsesteenweg 8", "Oosthamsesteenweg", "8", "Balen", "Kwaadmechelen", "België")
 	expected := "Oosthamsesteenweg 8, Balen, België"
 	if label != expected {
 		t.Errorf("got %q, want %q", label, expected)
@@ -13,7 +13,7 @@ func TestFormatLabel_address(t *testing.T) {
 
 func TestFormatLabel_venue(t *testing.T) {
 	// Venue with meaningful company name
-	label := formatLabel("BE", "Vitalita", "venue", "Oosthamsesteenweg", "8", "Balen", "Kwaadmechelen", "Antwerpen", "België")
+	label := formatLabel("BE", "Vitalita", "Oosthamsesteenweg", "8", "Balen", "Kwaadmechelen", "België")
 	expected := "Vitalita Oosthamsesteenweg 8, Balen, België"
 	if label != expected {
 		t.Errorf("got %q, want %q", label, expected)
@@ -22,7 +22,7 @@ func TestFormatLabel_venue(t *testing.T) {
 
 func TestFormatLabel_venueNameIsAddress(t *testing.T) {
 	// Venue where name == street + housenumber → deduplicate
-	label := formatLabel("BE", "Oosthamsesteenweg 8", "venue", "Oosthamsesteenweg", "8", "Balen", "Kwaadmechelen", "Antwerpen", "België")
+	label := formatLabel("BE", "Oosthamsesteenweg 8", "Oosthamsesteenweg", "8", "Balen", "Kwaadmechelen", "België")
 	expected := "Oosthamsesteenweg 8, Balen, België"
 	if label != expected {
 		t.Errorf("got %q, want %q", label, expected)
@@ -30,7 +30,7 @@ func TestFormatLabel_venueNameIsAddress(t *testing.T) {
 }
 
 func TestFormatLabel_noTemplate(t *testing.T) {
-	label := formatLabel("ES", "", "address", "Calle Mayor", "5", "", "Madrid", "Madrid", "España")
+	label := formatLabel("ES", "", "Calle Mayor", "5", "", "Madrid", "España")
 	if label != "" {
 		t.Errorf("expected empty for unknown country, got %q", label)
 	}
@@ -38,7 +38,7 @@ func TestFormatLabel_noTemplate(t *testing.T) {
 
 func TestFormatLabel_emptyLocaladmin(t *testing.T) {
 	// localadmin empty → falls back to locality
-	label := formatLabel("BE", "", "address", "Oosthamsesteenweg", "8", "", "Kwaadmechelen", "Antwerpen", "België")
+	label := formatLabel("BE", "", "Oosthamsesteenweg", "8", "", "Kwaadmechelen", "België")
 	expected := "Oosthamsesteenweg 8, Kwaadmechelen, België"
 	if label != expected {
 		t.Errorf("got %q, want %q", label, expected)
@@ -46,7 +46,7 @@ func TestFormatLabel_emptyLocaladmin(t *testing.T) {
 }
 
 func TestFormatLabel_emptyHousenumber(t *testing.T) {
-	label := formatLabel("BE", "", "address", "Oosthamsesteenweg", "", "Balen", "Kwaadmechelen", "Antwerpen", "België")
+	label := formatLabel("BE", "", "Oosthamsesteenweg", "", "Balen", "Kwaadmechelen", "België")
 	expected := "Oosthamsesteenweg, Balen, België"
 	if label != expected {
 		t.Errorf("got %q, want %q", label, expected)
@@ -54,9 +54,36 @@ func TestFormatLabel_emptyHousenumber(t *testing.T) {
 }
 
 func TestFormatLabel_allEmpty(t *testing.T) {
-	label := formatLabel("BE", "", "", "", "", "", "", "", "")
+	label := formatLabel("BE", "", "", "", "", "", "")
 	if label != "" {
 		t.Errorf("got %q, want empty", label)
+	}
+}
+
+func TestFormatLabel_netherlands(t *testing.T) {
+	// NL puts the house number after the street name (like BE).
+	label := formatLabel("NL", "Dorpsstraat 8", "Dorpsstraat", "8", "Amsterdam", "Amsterdam", "Nederland")
+	expected := "Dorpsstraat 8, Amsterdam, Nederland"
+	if label != expected {
+		t.Errorf("got %q, want %q", label, expected)
+	}
+}
+
+func TestFormatLabel_france(t *testing.T) {
+	// FR puts the house number before the street name.
+	label := formatLabel("FR", "8 Rue de la Paix", "Rue de la Paix", "8", "Paris", "Paris", "France")
+	expected := "8 Rue de la Paix, Paris, France"
+	if label != expected {
+		t.Errorf("got %q, want %q", label, expected)
+	}
+}
+
+func TestFormatLabel_luxembourg(t *testing.T) {
+	// LU puts the house number before the street name (like FR).
+	label := formatLabel("LU", "10 Rue de la Poste", "Rue de la Poste", "10", "Luxembourg", "Luxembourg", "Luxembourg")
+	expected := "10 Rue de la Poste, Luxembourg, Luxembourg"
+	if label != expected {
+		t.Errorf("got %q, want %q", label, expected)
 	}
 }
 
@@ -66,6 +93,7 @@ func TestIsDuplicateName(t *testing.T) {
 		want             bool
 	}{
 		{"Oosthamsesteenweg 8", "Oosthamsesteenweg", "8", true},
+		{"8 Oosthamsesteenweg", "Oosthamsesteenweg", "8", true}, // number-first form (FR/LU)
 		{"Oosthamsesteenweg", "Oosthamsesteenweg", "", true},
 		{"Vitalita", "Oosthamsesteenweg", "8", false},
 		{"", "Street", "1", true},

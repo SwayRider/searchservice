@@ -23,12 +23,12 @@ The searchservice exposes two server interfaces:
 
 Search proceeds in 3 phases, with an optional localadmin retry phase if no address results are found:
 
-1. **Phase 1 — Core regions with boundary**: Query Pelias for regions whose core area intersects the viewport, restricted to the viewport bounding box.
-2. **Phase 2 — Extended regions with boundary**: Query Pelias for extended-coverage regions not queried in Phase 1, also restricted to the viewport.
-3. **Phase 3 — Remaining configured regions with boundary**: Query any other configured Pelias servers not returned by RegionService, still with boundary restriction.
+1. **Phase 1 — Core regions with boundary**: Query Pelias for regions whose core area intersects the viewport.
+2. **Phase 2 — Extended regions with boundary**: Query Pelias for extended-coverage regions not queried in Phase 1.
+3. **Phase 3 — Remaining configured regions with boundary**: Query any other configured Pelias servers not returned by RegionService.
 4. **Localadmin retry**: If no address-layer results were found, retry with alternative queries using `localadmin` names extracted from locality results.
 
-The RegionService is called with the viewport expanded by 1× its width and height on each side to find all potentially relevant regions.
+The viewport is expanded by 1× its width and height on each side into an `extBox`. The `extBox` is sent both to RegionService (to find all potentially relevant regions) and to Pelias as `boundary.rect` (to filter results). Results are therefore restricted to the expanded box, not the raw viewport, and can come from up to ~3× the viewport area.
 
 ### Result Processing
 
@@ -51,6 +51,8 @@ score = confidence + textMatchBonus + housenumberBonus - distancePenalty - stree
 
 The confidence field is overwritten with the computed ranking score clamped to [0, 1].
 
+**Label formatting:** Pelias labels are post-processed per country in `internal/pelias/labels.go`. The generic formatter currently covers the dev-mini regions — street-first (`BE`, `NL`, `DE`) and number-first (`LU`, `FR`). New country formatters must be added there when expanding beyond these regions.
+
 ## Authorization
 
 | gRPC endpoint | Access |
@@ -58,6 +60,7 @@ The confidence field is overwritten with the computed ranking score clamped to [
 | `/health.v1.HealthService/Ping` | Public — no token required |
 | `/search.v1.SearchService/Search` | User JWT **or** service client token with `search:execute` scope |
 | `/search.v1.SearchService/ReverseGeocode` | User JWT **or** service client token with `search:execute` scope |
+| `/search.v1.SearchService/Autocomplete` | User JWT **or** service client token with `search:execute` scope |
 
 Service clients (e.g. swayrider-api) must obtain a token from authservice using their `clientId` and `clientSecret`, then pass it as `Authorization: Bearer <token>` in the gRPC call metadata.
 
@@ -73,6 +76,8 @@ Configuration is provided via environment variables or CLI flags.
 | -------------------- | -------- | ------- | ----------- |
 | `HTTP_PORT` | `-http-port` | 8080 | REST API port |
 | `GRPC_PORT` | `-grpc-port` | 8081 | gRPC port |
+| `HEALTH_PROBE_TTL_SECS` | `-health-probe-ttl-secs` | 15 | Seconds a health probe result is cached before re-probing dependencies |
+| `LOG_LEVEL` | `-log-level` | info | Log verbosity level |
 
 ### Pelias Configuration
 
@@ -93,13 +98,13 @@ The region names must match the values returned by RegionService (e.g. `iberian-
 | `AUTHSERVICE_HOST` | `-authservice-host` | | AuthService host |
 | `AUTHSERVICE_PORT` | `-authservice-port` | | AuthService gRPC port |
 
-See `.env.example` for a complete configuration example.
+See `env.example` for a complete configuration example.
 
 ## API Reference
 
 The API is defined in `protos/search/v1/search.proto`.
 
-The `/Search` and `/ReverseGeocode` RPCs require a valid JWT (`Authorization: Bearer <token>`). The `/Ping` and `/health` endpoints are public.
+The `/Search`, `/ReverseGeocode`, and `/Autocomplete` RPCs require a valid JWT (`Authorization: Bearer <token>`). The `/Ping` and `/health` endpoints are public.
 
 ---
 
@@ -225,35 +230,78 @@ Response: Same format as Search response.
 
 ---
 
+### Autocomplete
+
+Provides partial-text suggestions biased toward a focus point.
+
+- **Endpoint:** `POST /api/v1/search/autocomplete`
+- **Access:** JWT required (email verified)
+
+```bash
+curl --request POST \
+  --url http://localhost:8080/api/v1/search/autocomplete \
+  --header 'Authorization: Bearer <token>' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "text": "plaza sando",
+    "focusPoint": { "lat": 37.984, "lon": -1.128 },
+    "size": 5,
+    "language": "es"
+  }'
+```
+
+**Request fields:**
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `text` | string | yes | Partial search query |
+| `focusPoint` | Coordinate | yes | Reference point to bias suggestions toward |
+| `size` | int32 | no | Max results to return (default: 5, max: 20) |
+| `language` | string | no | BCP-47 language tag forwarded to Pelias |
+
+Response: Same format as Search response.
+
+**Error codes:**
+
+| gRPC code | Condition |
+| --------- | --------- |
+| `INVALID_ARGUMENT` | focus_point is required |
+| `UNAVAILABLE` | RegionService unreachable |
+| `UNAVAILABLE` | All configured Pelias servers unreachable |
+
+---
+
 ### Ping
 
-Simple health check.
+Simple liveness check.
 
-- **Endpoint:** `GET /api/v1/search/ping` (gRPC: `SearchService/Ping`)
+- **Endpoint:** `GET /api/v1/health/ping` (gRPC: `HealthService/Ping`)
 - **Access:** Public
 
 ---
 
 ### Health
 
-- **Endpoint:** `GET /v1/health/ping`
+Dependency-aware readiness check.
+
+- **Endpoint:** `GET /api/v1/health` (gRPC: `HealthService/Check`)
 - **Access:** Public
+- **Behavior:** Reports `UP` when regionservice and every configured Pelias instance are reachable, `DOWN` otherwise. Probe results are cached for `HEALTH_PROBE_TTL_SECS` (default 15s).
 
 ## Building
 
 ```bash
-# Generate protobuf code (run from repo root)
-make proto
+# Generate protobuf code (from repo root)
+cd protos && make
 
 # Build the service
-cd backend
-go build ./services/searchservice/cmd/searchservice
+go build ./cmd/searchservice
 
 # Run tests
-go test ./services/searchservice/...
+go test ./...
 
 # Run the service
-go run ./services/searchservice/cmd/searchservice
+go run ./cmd/searchservice
 ```
 
 ## Docker
@@ -262,6 +310,19 @@ go run ./services/searchservice/cmd/searchservice
 # Build container (from searchservice/ directory)
 make container-build
 ```
+
+### Tagging
+
+Tags are derived from the git state of the checkout:
+
+| Branch / state | Tags applied |
+|----------------|--------------|
+| Version-tagged commit (`v1.2.3`) | `v1.2.3`, `latest` |
+| `main` (untagged) | `v{last}-{date}-dev-b{N}`, `dev-latest` |
+| Other branch | `v{last}-{branch}-b{N}` |
+| Detached HEAD | `v{last}-{sha}-b{N}` |
+
+Non-release builds get an incrementing build number (`-b{N}`) so repeated builds of the same branch don't overwrite each other. The number comes from querying the registry for the highest existing `-b{N}` tag on the same base tag and adding 1; the build fails if the registry can't be reached. Release builds are immutable and never get a build number.
 
 ### FORCE_DEV_LATEST
 

@@ -14,14 +14,18 @@ func ParsePeliasRegions(val string) (map[string]string, error) {
 		return result, nil
 	}
 	for _, token := range strings.Split(val, ",") {
+		token = strings.TrimSpace(token)
 		idx := strings.IndexByte(token, '=')
 		if idx < 0 {
 			return nil, fmt.Errorf("invalid PELIAS_REGIONS token %q: missing '='", token)
 		}
-		region := token[:idx]
-		url := token[idx+1:]
+		region := strings.TrimSpace(token[:idx])
+		url := strings.TrimSpace(token[idx+1:])
 		if region == "" {
 			return nil, fmt.Errorf("invalid PELIAS_REGIONS token %q: empty region name", token)
+		}
+		if url == "" {
+			return nil, fmt.Errorf("invalid PELIAS_REGIONS token %q: empty URL", token)
 		}
 		result[region] = url
 	}

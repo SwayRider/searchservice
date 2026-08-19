@@ -19,7 +19,6 @@ const (
 	distanceDecayMax      = 0.5 // maximum penalty cap
 	fuzzyStreetPenaltyMax = 1.0 // maximum street mismatch penalty
 	streetSimCutoff       = 0.5 // below this similarity, penalty is max
-	minConfidence         = 0.0 // drop results below this confidence
 	minTokenLen           = 3   // minimum token length for street matching
 )
 
@@ -147,11 +146,16 @@ func fuzzyStreetPenalty(queryTokens []string, resultStreet string) float64 {
 	if resultStreet == "" {
 		return 0
 	}
-	// Find longest alphabetic token (likely the street name).
+	// Find longest alphabetic token (likely the street name). Compare rune
+	// counts and check the first rune (not the first byte) so multi-byte
+	// street names are handled correctly.
 	longest := ""
+	longestLen := 0
 	for _, t := range queryTokens {
-		if unicode.IsLetter(rune(t[0])) && len(t) > len(longest) {
+		runes := []rune(t)
+		if len(runes) > 0 && unicode.IsLetter(runes[0]) && len(runes) > longestLen {
 			longest = t
+			longestLen = len(runes)
 		}
 	}
 	if longest == "" {
@@ -165,7 +169,7 @@ func fuzzyStreetPenalty(queryTokens []string, resultStreet string) float64 {
 	}
 
 	dist := editDistance(longest, streetLower)
-	maxLen := max(len(longest), len(streetLower))
+	maxLen := max(len([]rune(longest)), len([]rune(streetLower)))
 	similarity := 1.0 - float64(dist)/float64(maxLen)
 	if similarity >= 1.0 {
 		return 0
@@ -275,14 +279,24 @@ func Rank(results []*searchv1.Result, query string, focusLat, focusLon float64, 
 	collapsed := CollapseAddresses(results, focusLat, focusLon)
 	deduped := DeduplicateByID(collapsed, focusLat, focusLon)
 
-	sort.Slice(deduped, func(i, j int) bool {
+	sort.SliceStable(deduped, func(i, j int) bool {
 		a, b := deduped[i], deduped[j]
 		scoreA := a.Confidence + queryTextScore(tokens, a.Label) + housenumberMatchScore(queryNums, a.Housenumber) - distancePenalty(a.Lat, a.Lon, focusLat, focusLon) - fuzzyStreetPenalty(tokens, a.Street)
 		scoreB := b.Confidence + queryTextScore(tokens, b.Label) + housenumberMatchScore(queryNums, b.Housenumber) - distancePenalty(b.Lat, b.Lon, focusLat, focusLon) - fuzzyStreetPenalty(tokens, b.Street)
 		if scoreA != scoreB {
 			return scoreA > scoreB
 		}
-		return equirDist(a.Lat, a.Lon, focusLat, focusLon) < equirDist(b.Lat, b.Lon, focusLat, focusLon)
+		distA := equirDist(a.Lat, a.Lon, focusLat, focusLon)
+		distB := equirDist(b.Lat, b.Lon, focusLat, focusLon)
+		if distA != distB {
+			return distA < distB
+		}
+		// Deterministic final tiebreak so equal-scored, equidistant results sort
+		// identically regardless of upstream map iteration order.
+		if a.Label != b.Label {
+			return a.Label < b.Label
+		}
+		return a.Id < b.Id
 	})
 
 	// Overwrite confidence with the computed ranking score (clamped to [0, 1]).
@@ -295,15 +309,6 @@ func Rank(results []*searchv1.Result, query string, focusLat, focusLon float64, 
 			r.Confidence = 1
 		}
 	}
-
-	// Apply confidence cutoff.
-	filtered := deduped[:0]
-	for _, r := range deduped {
-		if r.Confidence >= minConfidence {
-			filtered = append(filtered, r)
-		}
-	}
-	deduped = filtered
 
 	if len(deduped) > size {
 		deduped = deduped[:size]

@@ -44,3 +44,23 @@ func TestParsePeliasRegions_missingEquals(t *testing.T) {
 		t.Fatal("expected error for token without '='")
 	}
 }
+
+func TestParsePeliasRegions_trimsWhitespace(t *testing.T) {
+	m, err := ParsePeliasRegions(" region1 = http://host1/v1 , region2=http://host2/v1 ")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if m["region1"] != "http://host1/v1" {
+		t.Errorf("region1: got %q", m["region1"])
+	}
+	if m["region2"] != "http://host2/v1" {
+		t.Errorf("region2: got %q", m["region2"])
+	}
+}
+
+func TestParsePeliasRegions_emptyURL(t *testing.T) {
+	_, err := ParsePeliasRegions("region1=")
+	if err == nil {
+		t.Fatal("expected error for empty URL")
+	}
+}

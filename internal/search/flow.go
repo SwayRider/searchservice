@@ -3,14 +3,15 @@ package search
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 	"github.com/swayrider/grpcclients/regionclient"
 	searchv1 "github.com/swayrider/protos/search/v1"
 	log "github.com/swayrider/swlib/logger"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 // PeliasSearcher is the interface satisfied by *pelias.Client.
@@ -82,22 +83,53 @@ func NewSearchFlow(
 func (f *SearchFlow) Search(ctx context.Context, req *searchv1.SearchRequest) ([]*searchv1.Result, error) {
 	lg := f.logger.Derive(log.WithFunction("Search"))
 
+	if strings.TrimSpace(req.Text) == "" {
+		return nil, status.Error(codes.InvalidArgument, "text is required")
+	}
+
 	vp := req.Viewport
 	if vp == nil {
 		return nil, status.Error(codes.InvalidArgument, "viewport is required")
 	}
+	if vp.BottomLeft == nil || vp.TopRight == nil {
+		return nil, status.Error(codes.InvalidArgument, "viewport requires both bottom_left and top_right")
+	}
+	if !validCoordinate(vp.BottomLeft.Lat, vp.BottomLeft.Lon) ||
+		!validCoordinate(vp.TopRight.Lat, vp.TopRight.Lon) {
+		return nil, status.Error(codes.InvalidArgument,
+			"viewport coordinates must be finite, lat within [-90, 90], lon within [-180, 180]")
+	}
+	if vp.TopRight.Lat < vp.BottomLeft.Lat {
+		return nil, status.Error(codes.InvalidArgument,
+			"viewport is inverted: top_right latitude must not be below bottom_left latitude")
+	}
+
+	// Longitude inversion (bottom_left.lon > top_right.lon) represents a box
+	// crossing the antimeridian; compute its positive angular width.
+	wraps := vp.BottomLeft.Lon > vp.TopRight.Lon
+	width := vp.TopRight.Lon - vp.BottomLeft.Lon
+	if wraps {
+		width += 360
+	}
+	height := vp.TopRight.Lat - vp.BottomLeft.Lat
+
+	blLon := vp.BottomLeft.Lon - width
+	trLon := vp.TopRight.Lon + width
+	if wraps {
+		blLon, trLon = wrapLon(blLon), wrapLon(trLon)
+	} else {
+		blLon, trLon = clampLon(blLon), clampLon(trLon)
+	}
 
 	// Expand viewport by 1× width/height on each side for region service query
-	width := vp.TopRight.Lon - vp.BottomLeft.Lon
-	height := vp.TopRight.Lat - vp.BottomLeft.Lat
 	extBox := regionclient.BoundingBox{
 		BottomLeft: regionclient.Coordinate{
 			Latitude:  clampLat(vp.BottomLeft.Lat - height),
-			Longitude: vp.BottomLeft.Lon - width,
+			Longitude: blLon,
 		},
 		TopRight: regionclient.Coordinate{
 			Latitude:  clampLat(vp.TopRight.Lat + height),
-			Longitude: vp.TopRight.Lon + width,
+			Longitude: trLon,
 		},
 	}
 	minLat := extBox.BottomLeft.Latitude
@@ -107,8 +139,12 @@ func (f *SearchFlow) Search(ctx context.Context, req *searchv1.SearchRequest) ([
 
 	// Determine focus point
 	hasFocus := req.FocusPoint != nil
+	if hasFocus && !validCoordinate(req.FocusPoint.Lat, req.FocusPoint.Lon) {
+		return nil, status.Error(codes.InvalidArgument,
+			"focus_point coordinates must be finite, lat within [-90, 90], lon within [-180, 180]")
+	}
 	focusLat := (vp.BottomLeft.Lat + vp.TopRight.Lat) / 2
-	focusLon := (vp.BottomLeft.Lon + vp.TopRight.Lon) / 2
+	focusLon := wrapLon(vp.BottomLeft.Lon + width/2)
 	if hasFocus {
 		focusLat = req.FocusPoint.Lat
 		focusLon = req.FocusPoint.Lon
@@ -236,6 +272,36 @@ func clampLat(lat float64) float64 {
 	return lat
 }
 
+func clampLon(lon float64) float64 {
+	if lon < -180 {
+		return -180
+	}
+	if lon > 180 {
+		return 180
+	}
+	return lon
+}
+
+// wrapLon normalizes a longitude into [-180, 180], preserving antimeridian
+// wrapping (e.g. 181 → -179, -181 → 179).
+func wrapLon(lon float64) float64 {
+	lon = math.Mod(lon, 360)
+	if lon > 180 {
+		lon -= 360
+	} else if lon < -180 {
+		lon += 360
+	}
+	return lon
+}
+
+// validCoordinate reports whether lat/lon are finite and within WGS84 ranges.
+func validCoordinate(lat, lon float64) bool {
+	if math.IsNaN(lat) || math.IsInf(lat, 0) || math.IsNaN(lon) || math.IsInf(lon, 0) {
+		return false
+	}
+	return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180
+}
+
 // hasLayerResult reports whether any result has the given layer.
 func hasLayerResult(results []*searchv1.Result, layer string) bool {
 	for _, r := range results {
@@ -307,12 +373,20 @@ func (f *SearchFlow) retryWithLocaladmin(
 func (f *SearchFlow) Autocomplete(ctx context.Context, req *searchv1.AutocompleteRequest) ([]*searchv1.Result, error) {
 	lg := f.logger.Derive(log.WithFunction("Autocomplete"))
 
+	if strings.TrimSpace(req.Text) == "" {
+		return nil, status.Error(codes.InvalidArgument, "text is required")
+	}
+
 	if req.FocusPoint == nil {
 		return nil, status.Error(codes.InvalidArgument, "focus_point is required")
 	}
 
 	focusLat := req.FocusPoint.Lat
 	focusLon := req.FocusPoint.Lon
+	if !validCoordinate(focusLat, focusLon) {
+		return nil, status.Error(codes.InvalidArgument,
+			"focus_point coordinates must be finite, lat within [-90, 90], lon within [-180, 180]")
+	}
 
 	size := defaultSize
 	if req.Size != nil {
@@ -327,11 +401,11 @@ func (f *SearchFlow) Autocomplete(ctx context.Context, req *searchv1.Autocomplet
 	bb := regionclient.BoundingBox{
 		BottomLeft: regionclient.Coordinate{
 			Latitude:  clampLat(focusLat - 0.5),
-			Longitude: focusLon - 0.5,
+			Longitude: wrapLon(focusLon - 0.5),
 		},
 		TopRight: regionclient.Coordinate{
 			Latitude:  clampLat(focusLat + 0.5),
-			Longitude: focusLon + 0.5,
+			Longitude: wrapLon(focusLon + 0.5),
 		},
 	}
 
@@ -405,15 +479,19 @@ func (f *SearchFlow) ReverseGeocode(ctx context.Context, req *searchv1.ReverseGe
 
 	lat := req.Point.Lat
 	lon := req.Point.Lon
+	if !validCoordinate(lat, lon) {
+		return nil, status.Error(codes.InvalidArgument,
+			"point coordinates must be finite, lat within [-90, 90], lon within [-180, 180]")
+	}
 
 	bb := regionclient.BoundingBox{
 		BottomLeft: regionclient.Coordinate{
 			Latitude:  lat - 0.001,
-			Longitude: lon - 0.001,
+			Longitude: wrapLon(lon - 0.001),
 		},
 		TopRight: regionclient.Coordinate{
 			Latitude:  lat + 0.001,
-			Longitude: lon + 0.001,
+			Longitude: wrapLon(lon + 0.001),
 		},
 	}
 
@@ -443,6 +521,12 @@ func (f *SearchFlow) ReverseGeocode(ctx context.Context, req *searchv1.ReverseGe
 	size := 10
 	if req.Size != nil {
 		size = int(*req.Size)
+	}
+	if size <= 0 {
+		size = 10
+	}
+	if size > maxSize {
+		size = maxSize
 	}
 
 	language := ""

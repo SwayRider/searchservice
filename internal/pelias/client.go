@@ -35,6 +35,29 @@ func New(baseURL string) *Client {
 	}
 }
 
+// Ping performs a lightweight reachability check against the Pelias API root
+// (GET {baseURL}). Pelias exposes no dedicated health endpoint, so the API root
+// doubles as the liveness signal: any 2xx response counts as UP.
+// Returns nil if the server responds successfully, or an error on network
+// failure or a non-2xx status.
+func (c *Client) Ping(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("pelias health check returned status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 type geoJSONResponse struct {
 	Features []peliasFeature `json:"features"`
 }
@@ -66,6 +89,8 @@ type peliasGeometry struct {
 // Search queries Pelias for the given text.
 // If hasFocus is true, focus.point params are sent so Pelias biases its scoring.
 // If hasBoundary is true, boundary.rect params are sent to geographically filter results.
+// A boundary with minLon > maxLon is treated as an antimeridian-crossing box and is
+// split into two non-wrapping rect queries whose results are merged.
 // Returns (nil, error) on network or HTTP error; caller should log and skip.
 func (c *Client) Search(
 	ctx context.Context,
@@ -76,93 +101,50 @@ func (c *Client) Search(
 	minLat, minLon, maxLat, maxLon float64,
 	hasBoundary bool,
 ) ([]*searchv1.Result, error) {
-	params := url.Values{}
-	params.Set("text", text)
-	params.Set("layers", peliasLayers)
-	params.Set("size", strconv.Itoa(peliasSize))
+	base := url.Values{}
+	base.Set("text", text)
+	base.Set("layers", peliasLayers)
+	base.Set("size", strconv.Itoa(peliasSize))
 	if hasFocus {
-		params.Set("focus.point.lat", strconv.FormatFloat(focusLat, 'f', -1, 64))
-		params.Set("focus.point.lon", strconv.FormatFloat(focusLon, 'f', -1, 64))
-	}
-	if hasBoundary {
-		params.Set("boundary.rect.min_lat", strconv.FormatFloat(minLat, 'f', -1, 64))
-		params.Set("boundary.rect.min_lon", strconv.FormatFloat(minLon, 'f', -1, 64))
-		params.Set("boundary.rect.max_lat", strconv.FormatFloat(maxLat, 'f', -1, 64))
-		params.Set("boundary.rect.max_lon", strconv.FormatFloat(maxLon, 'f', -1, 64))
+		base.Set("focus.point.lat", strconv.FormatFloat(focusLat, 'f', -1, 64))
+		base.Set("focus.point.lon", strconv.FormatFloat(focusLon, 'f', -1, 64))
 	}
 
-	endpoint := fmt.Sprintf("%s/search?%s", c.baseURL, strings.ReplaceAll(params.Encode(), "+", "%20"))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	if language != "" {
-		req.Header.Set("Accept-Language", language)
+	if !hasBoundary {
+		return c.doRequest(ctx, "search", base, language)
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
+	if minLon > maxLon {
+		// Antimeridian-crossing box: split into [minLon, 180] and [-180, maxLon].
+		first := cloneValues(base)
+		first.Set("boundary.rect.min_lat", strconv.FormatFloat(minLat, 'f', -1, 64))
+		first.Set("boundary.rect.min_lon", strconv.FormatFloat(minLon, 'f', -1, 64))
+		first.Set("boundary.rect.max_lat", strconv.FormatFloat(maxLat, 'f', -1, 64))
+		first.Set("boundary.rect.max_lon", strconv.Itoa(180))
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("pelias returned status %d: %s", resp.StatusCode, body)
-	}
+		second := cloneValues(base)
+		second.Set("boundary.rect.min_lat", strconv.FormatFloat(minLat, 'f', -1, 64))
+		second.Set("boundary.rect.min_lon", strconv.Itoa(-180))
+		second.Set("boundary.rect.max_lat", strconv.FormatFloat(maxLat, 'f', -1, 64))
+		second.Set("boundary.rect.max_lon", strconv.FormatFloat(maxLon, 'f', -1, 64))
 
-	var geoResp geoJSONResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geoResp); err != nil {
-		return nil, err
-	}
-
-	results := make([]*searchv1.Result, 0, len(geoResp.Features))
-	for _, f := range geoResp.Features {
-		if len(f.Geometry.Coordinates) < 2 {
-			continue
+		res1, err := c.doRequest(ctx, "search", first, language)
+		if err != nil {
+			return nil, err
 		}
-		if f.Properties.Label == "" {
-			continue
+		res2, err := c.doRequest(ctx, "search", second, language)
+		if err != nil {
+			return nil, err
 		}
-
-		label := f.Properties.Label
-		if formatted := formatLabel(
-			f.Properties.CountryCode,
-			f.Properties.Name,
-			f.Properties.Layer,
-			f.Properties.Street,
-			f.Properties.Housenumber,
-			f.Properties.Localadmin,
-			f.Properties.Locality,
-			f.Properties.Region,
-			f.Properties.Country,
-		); formatted != "" {
-			label = formatted
-		}
-
-		results = append(results, &searchv1.Result{
-			Id:          f.Properties.ID,
-			Name:        f.Properties.Name,
-			Label:       label,
-			Street:      f.Properties.Street,
-			Housenumber: f.Properties.Housenumber,
-			Localadmin:  f.Properties.Localadmin,
-			Locality:    f.Properties.Locality,
-			Region:      f.Properties.Region,
-			Country:     f.Properties.Country,
-			CountryCode: f.Properties.CountryCode,
-			Confidence:  f.Properties.Confidence,
-			Layer:       f.Properties.Layer,
-			Lat:         f.Geometry.Coordinates[1], // GeoJSON: [lon, lat]
-			Lon:         f.Geometry.Coordinates[0],
-		})
+		return mergeResults(res1, res2), nil
 	}
-	return results, nil
+
+	base.Set("boundary.rect.min_lat", strconv.FormatFloat(minLat, 'f', -1, 64))
+	base.Set("boundary.rect.min_lon", strconv.FormatFloat(minLon, 'f', -1, 64))
+	base.Set("boundary.rect.max_lat", strconv.FormatFloat(maxLat, 'f', -1, 64))
+	base.Set("boundary.rect.max_lon", strconv.FormatFloat(maxLon, 'f', -1, 64))
+	return c.doRequest(ctx, "search", base, language)
 }
-
-// Response is an alias for the result slice, used by the Reverse method.
-type Response = []*searchv1.Result
 
 // Autocomplete queries Pelias for partial text using the /autocomplete endpoint.
 // focus.point params are always sent to bias results toward the user's location.
@@ -180,74 +162,7 @@ func (c *Client) Autocomplete(
 	params.Set("focus.point.lat", strconv.FormatFloat(focusLat, 'f', -1, 64))
 	params.Set("focus.point.lon", strconv.FormatFloat(focusLon, 'f', -1, 64))
 
-	endpoint := fmt.Sprintf("%s/autocomplete?%s", c.baseURL, strings.ReplaceAll(params.Encode(), "+", "%20"))
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	if language != "" {
-		req.Header.Set("Accept-Language", language)
-	}
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("pelias returned status %d: %s", resp.StatusCode, body)
-	}
-
-	var geoResp geoJSONResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geoResp); err != nil {
-		return nil, err
-	}
-
-	results := make([]*searchv1.Result, 0, len(geoResp.Features))
-	for _, f := range geoResp.Features {
-		if len(f.Geometry.Coordinates) < 2 {
-			continue
-		}
-		if f.Properties.Label == "" {
-			continue
-		}
-
-		label := f.Properties.Label
-		if formatted := formatLabel(
-			f.Properties.CountryCode,
-			f.Properties.Name,
-			f.Properties.Layer,
-			f.Properties.Street,
-			f.Properties.Housenumber,
-			f.Properties.Localadmin,
-			f.Properties.Locality,
-			f.Properties.Region,
-			f.Properties.Country,
-		); formatted != "" {
-			label = formatted
-		}
-
-		results = append(results, &searchv1.Result{
-			Id:          f.Properties.ID,
-			Name:        f.Properties.Name,
-			Label:       label,
-			Street:      f.Properties.Street,
-			Housenumber: f.Properties.Housenumber,
-			Localadmin:  f.Properties.Localadmin,
-			Locality:    f.Properties.Locality,
-			Region:      f.Properties.Region,
-			Country:     f.Properties.Country,
-			CountryCode: f.Properties.CountryCode,
-			Confidence:  f.Properties.Confidence,
-			Layer:       f.Properties.Layer,
-			Lat:         f.Geometry.Coordinates[1], // GeoJSON: [lon, lat]
-			Lon:         f.Geometry.Coordinates[0],
-		})
-	}
-	return results, nil
+	return c.doRequest(ctx, "autocomplete", params, language)
 }
 
 // Reverse queries Pelias for the given coordinates (reverse geocoding).
@@ -268,7 +183,13 @@ func (c *Client) Reverse(
 		params.Set("lang", language)
 	}
 
-	endpoint := fmt.Sprintf("%s/reverse?%s", c.baseURL, strings.ReplaceAll(params.Encode(), "+", "%20"))
+	return c.doRequest(ctx, "reverse", params, language)
+}
+
+// doRequest performs a GET against the given Pelias endpoint with the supplied
+// query params, then decodes and maps the response features to results.
+func (c *Client) doRequest(ctx context.Context, path string, params url.Values, language string) ([]*searchv1.Result, error) {
+	endpoint := fmt.Sprintf("%s/%s?%s", c.baseURL, path, strings.ReplaceAll(params.Encode(), "+", "%20"))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -307,12 +228,10 @@ func (c *Client) Reverse(
 		if formatted := formatLabel(
 			f.Properties.CountryCode,
 			f.Properties.Name,
-			f.Properties.Layer,
 			f.Properties.Street,
 			f.Properties.Housenumber,
 			f.Properties.Localadmin,
 			f.Properties.Locality,
-			f.Properties.Region,
 			f.Properties.Country,
 		); formatted != "" {
 			label = formatted
@@ -331,9 +250,38 @@ func (c *Client) Reverse(
 			CountryCode: f.Properties.CountryCode,
 			Confidence:  f.Properties.Confidence,
 			Layer:       f.Properties.Layer,
-			Lat:         f.Geometry.Coordinates[1],
+			Lat:         f.Geometry.Coordinates[1], // GeoJSON: [lon, lat]
 			Lon:         f.Geometry.Coordinates[0],
 		})
 	}
 	return results, nil
+}
+
+// cloneValues returns a shallow copy of v so callers can mutate it independently.
+func cloneValues(v url.Values) url.Values {
+	c := make(url.Values, len(v))
+	for k, vs := range v {
+		c[k] = append([]string(nil), vs...)
+	}
+	return c
+}
+
+// mergeResults concatenates two result slices, dropping duplicate ids that
+// appear in both (features on the antimeridian seam can match both rects).
+func mergeResults(a, b []*searchv1.Result) []*searchv1.Result {
+	merged := make([]*searchv1.Result, 0, len(a)+len(b))
+	seen := make(map[string]bool)
+	for _, r := range a {
+		merged = append(merged, r)
+		if r.Id != "" {
+			seen[r.Id] = true
+		}
+	}
+	for _, r := range b {
+		if r.Id != "" && seen[r.Id] {
+			continue
+		}
+		merged = append(merged, r)
+	}
+	return merged
 }
