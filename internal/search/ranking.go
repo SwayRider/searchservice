@@ -4,6 +4,7 @@ package search
 import (
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -81,6 +82,33 @@ func housenumberMatchScore(queryNums []string, resultHN string) float64 {
 		}
 	}
 	return 0
+}
+
+// leadingNumber parses the leading digit run of s (e.g. "12A" -> 12, true).
+func leadingNumber(s string) (int, bool) {
+	i := 0
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(s[:i])
+	return n, err == nil
+}
+
+// housenumberCloseness returns the absolute numeric distance between hn and
+// target, or math.MaxInt32 if either can't be parsed as a leading number.
+func housenumberCloseness(hn, target string) int {
+	n, ok1 := leadingNumber(hn)
+	t, ok2 := leadingNumber(target)
+	if !ok1 || !ok2 {
+		return math.MaxInt32
+	}
+	if d := n - t; d >= 0 {
+		return d
+	}
+	return t - n
 }
 
 func equirDist(lat, lon, focusLat, focusLon float64) float64 {
@@ -182,9 +210,11 @@ func fuzzyStreetPenalty(queryTokens []string, resultStreet string) float64 {
 
 // Find longest alphabetic token (likely the street name).
 // keeping only the best result per group.
-// Priority: exact housenumber match > higher confidence > nearer to focus.
-// Non-address results are passed through unchanged.
-func CollapseAddresses(results []*searchv1.Result, focusLat, focusLon float64) []*searchv1.Result {
+// Priority: when targetHousenumber is set, numeric closeness to it wins
+// first; otherwise (or on a closeness tie) exact housenumber match > higher
+// confidence > nearer to focus. Non-address results are passed through
+// unchanged.
+func CollapseAddresses(results []*searchv1.Result, focusLat, focusLon float64, targetHousenumber string) []*searchv1.Result {
 	type key struct {
 		street   string
 		locality string
@@ -207,6 +237,17 @@ func CollapseAddresses(results []*searchv1.Result, focusLat, focusLon float64) [
 		if !ok {
 			addressMap[k] = r
 			continue
+		}
+		if targetHousenumber != "" {
+			rDiff := housenumberCloseness(r.Housenumber, targetHousenumber)
+			eDiff := housenumberCloseness(existing.Housenumber, targetHousenumber)
+			if rDiff != eDiff {
+				if rDiff < eDiff {
+					addressMap[k] = r
+				}
+				continue
+			}
+			// Tie on closeness: fall through to the confidence/distance tie-break below.
 		}
 		if r.Confidence > existing.Confidence {
 			addressMap[k] = r
@@ -266,7 +307,9 @@ func DeduplicateByID(results []*searchv1.Result, focusLat, focusLon float64) []*
 // Rank applies collapsing, then deduplication by id, then sorts by
 // (confidence + text score + housenumber bonus - distance penalty - street mismatch) DESC / distance ASC,
 // then overwrites each result's confidence with the computed score, and truncates to size (default 5, max 20).
-func Rank(results []*searchv1.Result, query string, focusLat, focusLon float64, size int) []*searchv1.Result {
+// When targetHousenumber is non-empty, street-level collapsing prefers the
+// address numerically closest to it (see CollapseAddresses).
+func Rank(results []*searchv1.Result, query string, focusLat, focusLon float64, size int, targetHousenumber string) []*searchv1.Result {
 	if size <= 0 {
 		size = defaultSize
 	}
@@ -276,7 +319,7 @@ func Rank(results []*searchv1.Result, query string, focusLat, focusLon float64, 
 
 	tokens := tokenizeQuery(query)
 	queryNums := extractHouseNumbers(query)
-	collapsed := CollapseAddresses(results, focusLat, focusLon)
+	collapsed := CollapseAddresses(results, focusLat, focusLon, targetHousenumber)
 	deduped := DeduplicateByID(collapsed, focusLat, focusLon)
 
 	sort.SliceStable(deduped, func(i, j int) bool {
