@@ -1,6 +1,7 @@
 package search
 
 import (
+	"math"
 	"testing"
 
 	searchv1 "github.com/swayrider/protos/search/v1"
@@ -23,7 +24,7 @@ func TestRank_confidenceFirst(t *testing.T) {
 		makeResult("Low Confidence", "", "", "venue", 0.96, 0, 0),
 		makeResult("High Confidence", "", "", "venue", 1.0, 0, 0),
 	}
-	ranked := Rank(results, "", 0, 0, 5)
+	ranked := Rank(results, "", 0, 0, 5, "")
 	if len(ranked) == 0 {
 		t.Fatal("expected results, got empty")
 	}
@@ -39,7 +40,7 @@ func TestRank_distanceTiebreak(t *testing.T) {
 		makeResult("Far", "", "", "venue", 1.0, 51.05, 5.05),
 		makeResult("Near", "", "", "venue", 1.0, 51.01, 5.01),
 	}
-	ranked := Rank(results, "", focusLat, focusLon, 5)
+	ranked := Rank(results, "", focusLat, focusLon, 5, "")
 	if len(ranked) == 0 {
 		t.Fatal("expected results, got empty")
 	}
@@ -53,7 +54,7 @@ func TestCollapseAddresses_sameStreetLocality(t *testing.T) {
 		makeResult("1 Main St, City", "Main St", "City", "address", 0.7, 0, 0),
 		makeResult("2 Main St, City", "Main St", "City", "address", 0.9, 1, 1),
 	}
-	collapsed := CollapseAddresses(results, 0, 0)
+	collapsed := CollapseAddresses(results, 0, 0, "")
 	if len(collapsed) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(collapsed))
 	}
@@ -67,7 +68,7 @@ func TestCollapseAddresses_differentStreet(t *testing.T) {
 		makeResult("1 Main St, City", "Main St", "City", "address", 0.9, 0, 0),
 		makeResult("1 Oak Ave, City", "Oak Ave", "City", "address", 0.9, 1, 1),
 	}
-	collapsed := CollapseAddresses(results, 0, 0)
+	collapsed := CollapseAddresses(results, 0, 0, "")
 	if len(collapsed) != 2 {
 		t.Errorf("expected 2 results (different streets), got %d", len(collapsed))
 	}
@@ -78,9 +79,77 @@ func TestCollapseAddresses_differentLocality(t *testing.T) {
 		makeResult("1 Main St, CityA", "Main St", "CityA", "address", 0.9, 0, 0),
 		makeResult("1 Main St, CityB", "Main St", "CityB", "address", 0.9, 1, 1),
 	}
-	collapsed := CollapseAddresses(results, 0, 0)
+	collapsed := CollapseAddresses(results, 0, 0, "")
 	if len(collapsed) != 2 {
 		t.Errorf("expected 2 results (different localities), got %d", len(collapsed))
+	}
+}
+
+func TestCollapseAddresses_targetHousenumberPrefersClosestOverHigherConfidence(t *testing.T) {
+	results := []*searchv1.Result{
+		makeResultWithID("far", "Kerkstraat 50, Diest", "Kerkstraat", "50", "Diest", "address", 0.99, 0, 0),
+		makeResultWithID("close", "Kerkstraat 16, Diest", "Kerkstraat", "16", "Diest", "address", 0.5, 1, 1),
+	}
+	collapsed := CollapseAddresses(results, 0, 0, "15")
+	if len(collapsed) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(collapsed))
+	}
+	if collapsed[0].Id != "close" {
+		t.Errorf("expected numerically closest housenumber kept despite lower confidence, got %s", collapsed[0].Id)
+	}
+}
+
+func TestCollapseAddresses_targetHousenumberTieFallsBackToConfidence(t *testing.T) {
+	results := []*searchv1.Result{
+		makeResultWithID("low", "Kerkstraat 14, Diest", "Kerkstraat", "14", "Diest", "address", 0.5, 0, 0),
+		makeResultWithID("high", "Kerkstraat 16, Diest", "Kerkstraat", "16", "Diest", "address", 0.9, 1, 1),
+	}
+	collapsed := CollapseAddresses(results, 0, 0, "15")
+	if len(collapsed) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(collapsed))
+	}
+	if collapsed[0].Id != "high" {
+		t.Errorf("expected higher-confidence result on an equal-closeness tie, got %s", collapsed[0].Id)
+	}
+}
+
+func TestCollapseAddresses_noTargetHousenumberUsesConfidence(t *testing.T) {
+	results := []*searchv1.Result{
+		makeResultWithID("low", "Kerkstraat 50, Diest", "Kerkstraat", "50", "Diest", "address", 0.5, 0, 0),
+		makeResultWithID("high", "Kerkstraat 16, Diest", "Kerkstraat", "16", "Diest", "address", 0.9, 1, 1),
+	}
+	collapsed := CollapseAddresses(results, 0, 0, "")
+	if len(collapsed) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(collapsed))
+	}
+	if collapsed[0].Id != "high" {
+		t.Errorf("expected higher-confidence result when no target housenumber is given, got %s", collapsed[0].Id)
+	}
+}
+
+func TestRank_targetHousenumberPassesThroughToCollapse(t *testing.T) {
+	results := []*searchv1.Result{
+		makeResultWithID("far", "Kerkstraat 50, Diest", "Kerkstraat", "50", "Diest", "address", 0.99, 51.1, 5.1),
+		makeResultWithID("close", "Kerkstraat 16, Diest", "Kerkstraat", "16", "Diest", "address", 0.5, 51.1, 5.1),
+	}
+	ranked := Rank(results, "kerkstraat, diest", 51.1, 5.1, 5, "15")
+	if len(ranked) != 1 {
+		t.Fatalf("expected 1 collapsed result, got %d", len(ranked))
+	}
+	if ranked[0].Id != "close" {
+		t.Errorf("expected numerically closest housenumber kept, got %s", ranked[0].Id)
+	}
+}
+
+func TestHousenumberCloseness_unparseableIsWorstCase(t *testing.T) {
+	if got := housenumberCloseness("abc", "15"); got != math.MaxInt32 {
+		t.Errorf("expected MaxInt32 for unparseable housenumber, got %d", got)
+	}
+	if got := housenumberCloseness("15", "abc"); got != math.MaxInt32 {
+		t.Errorf("expected MaxInt32 for unparseable target, got %d", got)
+	}
+	if got := housenumberCloseness("12A", "10"); got != 2 {
+		t.Errorf("expected leading-digit parse of \"12A\" to give closeness 2, got %d", got)
 	}
 }
 
@@ -89,7 +158,7 @@ func TestCollapseAddresses_nonAddressPassthrough(t *testing.T) {
 		makeResult("Venue A", "", "City", "venue", 0.9, 0, 0),
 		makeResult("Street B", "Street B", "City", "street", 0.8, 1, 1),
 	}
-	collapsed := CollapseAddresses(results, 0, 0)
+	collapsed := CollapseAddresses(results, 0, 0, "")
 	if len(collapsed) != 2 {
 		t.Errorf("expected 2 non-address results, got %d", len(collapsed))
 	}
@@ -100,7 +169,7 @@ func TestRank_sizeTruncation(t *testing.T) {
 	for i := range results {
 		results[i] = makeResult("R", "", "", "venue", 0.95+float64(i)*0.005, 0, 0)
 	}
-	ranked := Rank(results, "", 0, 0, 5)
+	ranked := Rank(results, "", 0, 0, 5, "")
 	if len(ranked) != 5 {
 		t.Errorf("expected 5, got %d", len(ranked))
 	}
@@ -111,7 +180,7 @@ func TestRank_defaultSize(t *testing.T) {
 	for i := range results {
 		results[i] = makeResult("R", "", "", "venue", 0.95+float64(i)*0.005, 0, 0)
 	}
-	ranked := Rank(results, "", 0, 0, 0) // 0 → default (5)
+	ranked := Rank(results, "", 0, 0, 0, "") // 0 → default (5)
 	if len(ranked) != 5 {
 		t.Errorf("expected 5 (default), got %d", len(ranked))
 	}
@@ -122,7 +191,7 @@ func TestRank_maxSize(t *testing.T) {
 	for i := range results {
 		results[i] = makeResult("R", "", "", "venue", 0.95+float64(i)*0.002, 0, 0)
 	}
-	ranked := Rank(results, "", 0, 0, 50) // 50 → capped at 20
+	ranked := Rank(results, "", 0, 0, 50, "") // 50 → capped at 20
 	if len(ranked) != 20 {
 		t.Errorf("expected 20 (max), got %d", len(ranked))
 	}
@@ -134,7 +203,7 @@ func TestRank_textScoreBoostsQueryMatch(t *testing.T) {
 		makeResult("Plaza Sandoval, Seville, Spain", "Plaza Sandoval", "Seville", "address", 1.0, 37.4, -5.9),
 		makeResult("Plaza Sandoval 7, Murcia, Spain", "Plaza Sandoval", "Murcia", "address", 1.0, 37.4, -5.0),
 	}
-	ranked := Rank(results, "plaza sandoval, murcia", focusLat, focusLon, 5)
+	ranked := Rank(results, "plaza sandoval, murcia", focusLat, focusLon, 5, "")
 	if len(ranked) == 0 {
 		t.Fatal("expected results, got empty")
 	}
@@ -162,7 +231,7 @@ func TestRank_housenumberExactMatch(t *testing.T) {
 		makeResultWithID("addr-62", "Oosthamsesteenweg 62_8, Belgium", "Oosthamsesteenweg", "62_8", "Kwaadmechelen", "address", 1.0, 51.124, 5.159),
 		makeResultWithID("addr-8", "Oosthamsesteenweg 8, Belgium", "Oosthamsesteenweg", "8", "Kwaadmechelen", "address", 1.0, 51.133, 5.156),
 	}
-	ranked := Rank(results, "oosthamsesteenweg 8", 51.1, 5.1, 5)
+	ranked := Rank(results, "oosthamsesteenweg 8", 51.1, 5.1, 5, "")
 	if ranked[0].Housenumber != "8" {
 		t.Errorf("expected housenumber 8 first, got %s", ranked[0].Housenumber)
 	}
@@ -210,7 +279,7 @@ func TestRank_distancePenaltyDemotesDistantResults(t *testing.T) {
 		makeResultWithID("far", "Balen, Switzerland", "", "", "Valens", "neighbourhood", 1.0, 48.0, 7.0),
 		makeResultWithID("near", "Balen, Belgium", "", "", "", "locality", 1.0, 51.17, 5.17),
 	}
-	ranked := Rank(results, "balen", 51.1, 5.1, 5)
+	ranked := Rank(results, "balen", 51.1, 5.1, 5, "")
 	if len(ranked) == 0 {
 		t.Fatal("expected results, got empty")
 	}
@@ -224,7 +293,7 @@ func TestRank_distancePenaltyPreservesHighConfidence(t *testing.T) {
 		makeResultWithID("far", "Far Address", "Main St", "1", "FarCity", "address", 1.0, 51.5, 5.5),
 		makeResultWithID("near", "Near Locality", "", "", "", "locality", 1.0, 51.17, 5.17),
 	}
-	ranked := Rank(results, "main st 1", 51.1, 5.1, 5)
+	ranked := Rank(results, "main st 1", 51.1, 5.1, 5, "")
 	if ranked[0].Id != "far" {
 		t.Errorf("expected high-confidence far result first, got %s (label=%s)", ranked[0].Id, ranked[0].Label)
 	}
@@ -235,7 +304,7 @@ func TestFuzzyStreetPenalty_mismatchedStreet(t *testing.T) {
 		makeResultWithID("de", "Engelbertstraße 8, Germany", "Engelbertstraße", "8", "Selfkant", "address", 1.0, 51.04, 5.88),
 		makeResultWithID("be", "Oosthamsesteenweg 8, Balen, Belgium", "Oosthamsesteenweg", "8", "Balen", "address", 1.0, 51.13, 5.16),
 	}
-	ranked := Rank(results, "oosthamsesteenweg 8", 51.1, 5.1, 5)
+	ranked := Rank(results, "oosthamsesteenweg 8", 51.1, 5.1, 5, "")
 	if len(ranked) == 0 {
 		t.Fatal("expected at least 1 result")
 	}
@@ -248,7 +317,7 @@ func TestFuzzyStreetPenalty_noPenaltyWithoutStreet(t *testing.T) {
 	results := []*searchv1.Result{
 		makeResultWithID("locality", "Balen, Belgium", "", "", "Balen", "locality", 1.0, 51.17, 5.17),
 	}
-	ranked := Rank(results, "oosthamsesteenweg 8", 51.1, 5.1, 5)
+	ranked := Rank(results, "oosthamsesteenweg 8", 51.1, 5.1, 5, "")
 	if len(ranked) != 1 || ranked[0].Id != "locality" {
 		t.Errorf("expected locality result to pass through without penalty")
 	}
@@ -261,7 +330,7 @@ func TestFuzzyStreetPenalty_partialMatch(t *testing.T) {
 		makeResultWithID("partial", "Oosthamsesteenweg 8, Belgium", "Oosthamsesteenweg", "8", "SomePlace", "address", 1.0, 51.1, 5.1),
 		makeResultWithID("unrelated", "Kirchplatz 8, Germany", "Kirchplatz", "8", "Selfkant", "address", 1.0, 51.04, 5.88),
 	}
-	ranked := Rank(results, "oosthamsesteenweg 8", 51.1, 5.1, 5)
+	ranked := Rank(results, "oosthamsesteenweg 8", 51.1, 5.1, 5, "")
 	if len(ranked) == 0 {
 		t.Fatal("expected at least 1 result")
 	}
@@ -298,7 +367,7 @@ func TestRank_deterministicLabelTiebreak(t *testing.T) {
 		makeResult("Alpha Place", "", "", "venue", 1.0, 51.0, 5.0),
 		makeResult("Middle Place", "", "", "venue", 1.0, 51.0, 5.0),
 	}
-	ranked := Rank(results, "", 51.0, 5.0, 5)
+	ranked := Rank(results, "", 51.0, 5.0, 5, "")
 	if len(ranked) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(ranked))
 	}
@@ -315,8 +384,8 @@ func TestRank_deterministicIDTiebreak_orderIndependent(t *testing.T) {
 	b := makeResultWithID("b", "Same Label", "", "", "", "venue", 1.0, 51.0, 5.0)
 	c := makeResultWithID("c", "Same Label", "", "", "", "venue", 1.0, 51.0, 5.0)
 
-	rank1 := Rank([]*searchv1.Result{a, b, c}, "", 51.0, 5.0, 5)
-	rank2 := Rank([]*searchv1.Result{c, a, b}, "", 51.0, 5.0, 5)
+	rank1 := Rank([]*searchv1.Result{a, b, c}, "", 51.0, 5.0, 5, "")
+	rank2 := Rank([]*searchv1.Result{c, a, b}, "", 51.0, 5.0, 5, "")
 
 	if len(rank1) != 3 || len(rank2) != 3 {
 		t.Fatalf("expected 3 results each, got %d and %d", len(rank1), len(rank2))

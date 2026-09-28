@@ -654,3 +654,86 @@ func TestFlowAutocomplete_emptyText_returnsInvalidArgument(t *testing.T) {
 	})
 	assertInvalidArgument(t, err)
 }
+
+// TestFlowAutocomplete_sameAddressFromCoreAndExtended_deduplicated reproduces a
+// real-world report: a core region and an overlapping extended region (see
+// regionservice's overlap area) each independently return the same physical
+// address ("Oosthamsesteenweg 1, Kwaadmechelen") from their own Pelias
+// instance, with different ids. Each batch is collapsed/deduped on its own
+// before the two are combined, so the result must not appear twice overall.
+func TestFlowAutocomplete_sameAddressFromCoreAndExtended_deduplicated(t *testing.T) {
+	coreSearcher := &fakePeliasSearcher{results: []*searchv1.Result{
+		{
+			Id: "core-1", Label: "Oosthamsesteenweg 1, Kwaadmechelen, Belgium",
+			Street: "Oosthamsesteenweg", Housenumber: "1", Locality: "Kwaadmechelen",
+			Layer: "address", Confidence: 0.9, Lat: 51.13, Lon: 5.15,
+		},
+	}}
+	extendedSearcher := &fakePeliasSearcher{results: []*searchv1.Result{
+		{
+			Id: "extended-1", Label: "Oosthamsesteenweg 1, Kwaadmechelen, Belgium",
+			Street: "Oosthamsesteenweg", Housenumber: "1", Locality: "Kwaadmechelen",
+			Layer: "address", Confidence: 0.9, Lat: 51.13, Lon: 5.15,
+		},
+	}}
+
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{"benelux": coreSearcher, "west-europe": extendedSearcher},
+		&fakeRegionSearcher{list: regionclient.RegionList{
+			CoreRegions:     []string{"benelux"},
+			ExtendedRegions: []string{"west-europe"},
+		}},
+		testLogger(),
+	)
+
+	results, err := flow.Autocomplete(context.Background(), &searchv1.AutocompleteRequest{
+		Text:       "oosthamse",
+		FocusPoint: &pbgeo.Coordinate{Lat: 51.13, Lon: 5.15},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 deduplicated result, got %d: %+v", len(results), results)
+	}
+}
+
+// TestFlowAutocomplete_targetHousenumber_picksClosestMatch reproduces the
+// house-number-picker feature: the app asks for "Kerkstraat" with a target
+// housenumber of "15" (typed by the user), and the street has several
+// address hits with different housenumbers/confidences. The result should be
+// the numerically closest one, not the highest-confidence one.
+func TestFlowAutocomplete_targetHousenumber_picksClosestMatch(t *testing.T) {
+	searcher := &fakePeliasSearcher{results: []*searchv1.Result{
+		{
+			Id: "far", Label: "Kerkstraat 50, Diest, Belgium",
+			Street: "Kerkstraat", Housenumber: "50", Locality: "Diest",
+			Layer: "address", Confidence: 0.99, Lat: 50.98, Lon: 5.05,
+		},
+		{
+			Id: "close", Label: "Kerkstraat 16, Diest, Belgium",
+			Street: "Kerkstraat", Housenumber: "16", Locality: "Diest",
+			Layer: "address", Confidence: 0.5, Lat: 50.98, Lon: 5.05,
+		},
+	}}
+	flow := NewSearchFlow(
+		map[string]PeliasSearcher{"west-europe": searcher},
+		&fakeRegionSearcher{list: regionclient.RegionList{CoreRegions: []string{"west-europe"}}},
+		testLogger(),
+	)
+
+	results, err := flow.Autocomplete(context.Background(), &searchv1.AutocompleteRequest{
+		Text:              "Kerkstraat 15, Diest",
+		FocusPoint:        &pbgeo.Coordinate{Lat: 50.98, Lon: 5.05},
+		TargetHousenumber: "15",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 collapsed result, got %d: %+v", len(results), results)
+	}
+	if results[0].Id != "close" {
+		t.Errorf("expected numerically closest housenumber (16) over higher-confidence (50), got %s", results[0].Id)
+	}
+}

@@ -195,7 +195,7 @@ func (f *SearchFlow) Search(ctx context.Context, req *searchv1.SearchRequest) ([
 	// Bail out early if context is already cancelled/expired
 	if err := ctx.Err(); err != nil {
 		if successCount > 0 {
-			return Rank(allResults, text, focusLat, focusLon, size), nil
+			return Rank(allResults, text, focusLat, focusLon, size, ""), nil
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, status.Error(codes.DeadlineExceeded, "context deadline exceeded")
@@ -225,7 +225,7 @@ func (f *SearchFlow) Search(ctx context.Context, req *searchv1.SearchRequest) ([
 	// Bail out early if context is already cancelled/expired
 	if err := ctx.Err(); err != nil {
 		if successCount > 0 {
-			return Rank(allResults, text, focusLat, focusLon, size), nil
+			return Rank(allResults, text, focusLat, focusLon, size, ""), nil
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, status.Error(codes.DeadlineExceeded, "context deadline exceeded")
@@ -259,7 +259,7 @@ func (f *SearchFlow) Search(ctx context.Context, req *searchv1.SearchRequest) ([
 		}
 	}
 
-	return Rank(allResults, text, focusLat, focusLon, size), nil
+	return Rank(allResults, text, focusLat, focusLon, size, ""), nil
 }
 
 func clampLat(lat float64) float64 {
@@ -300,6 +300,41 @@ func validCoordinate(lat, lon float64) bool {
 		return false
 	}
 	return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180
+}
+
+// excludeSeenResults filters out results that duplicate one already present in
+// seen: by id (exact match, any layer), or by street+locality (address layer,
+// matching CollapseAddresses' notion of "the same address"). This prevents the
+// same real-world result — returned independently by both a core and an
+// overlapping extended region's Pelias instance — from appearing twice when
+// core and extended results are ranked in separate batches.
+func excludeSeenResults(results []*searchv1.Result, seen []*searchv1.Result) []*searchv1.Result {
+	type addrKey struct {
+		street   string
+		locality string
+	}
+	seenIDs := make(map[string]bool)
+	seenAddrs := make(map[addrKey]bool)
+	for _, r := range seen {
+		if r.Id != "" {
+			seenIDs[r.Id] = true
+		}
+		if r.Layer == "address" {
+			seenAddrs[addrKey{street: r.Street, locality: r.Locality}] = true
+		}
+	}
+
+	out := make([]*searchv1.Result, 0, len(results))
+	for _, r := range results {
+		if r.Id != "" && seenIDs[r.Id] {
+			continue
+		}
+		if r.Layer == "address" && seenAddrs[addrKey{street: r.Street, locality: r.Locality}] {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
 }
 
 // hasLayerResult reports whether any result has the given layer.
@@ -460,10 +495,11 @@ func (f *SearchFlow) Autocomplete(ctx context.Context, req *searchv1.Autocomplet
 		return nil, status.Error(codes.Unavailable, "all pelias servers unavailable")
 	}
 
-	ranked := Rank(coreResults, req.Text, focusLat, focusLon, size)
+	ranked := Rank(coreResults, req.Text, focusLat, focusLon, size, req.TargetHousenumber)
 	remaining := size - len(ranked)
 	if remaining > 0 {
-		ranked = append(ranked, Rank(extendedResults, req.Text, focusLat, focusLon, remaining)...)
+		extendedResults = excludeSeenResults(extendedResults, ranked)
+		ranked = append(ranked, Rank(extendedResults, req.Text, focusLat, focusLon, remaining, req.TargetHousenumber)...)
 	}
 	return ranked, nil
 }

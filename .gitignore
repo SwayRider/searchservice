@@ -1,6 +1,9 @@
 .env
 local.env
 
+# Go debugger (Delve/VS Code) build artifacts
+__debug_bin*
+
 # REST collections moved to testing repo
 REST/
 rest/
